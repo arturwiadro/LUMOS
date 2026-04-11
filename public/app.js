@@ -2,6 +2,9 @@ const navButtons = document.querySelectorAll(".nav-btn");
 const tabs = document.querySelectorAll(".tab");
 
 let allData = [];
+let currentConfig = null;
+let mapInstance = null;
+let markerInstance = null;
 
 navButtons.forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -10,6 +13,12 @@ navButtons.forEach((btn) => {
 
     btn.classList.add("active");
     document.getElementById(btn.dataset.tab).classList.add("active");
+
+    if (btn.dataset.tab === "mapTab" && mapInstance) {
+      setTimeout(() => {
+        mapInstance.invalidateSize();
+      }, 200);
+    }
   });
 });
 
@@ -27,9 +36,21 @@ async function fetchJson(url) {
   return res.json();
 }
 
+async function postJson(url, body) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!res.ok) throw new Error(`Błąd ${res.status} dla ${url}`);
+  return res.json();
+}
+
 function findLastByType(type) {
-  const filtered = [...allData].reverse().find((item) => item.type === type);
-  return filtered || null;
+  return [...allData].reverse().find((item) => item.type === type) || null;
 }
 
 function updateDashboard(latest, stats, alarms) {
@@ -38,6 +59,10 @@ function updateDashboard(latest, stats, alarms) {
   document.getElementById("liveState").textContent = latest?.state ?? "—";
   document.getElementById("liveLux").textContent = latest?.lux ?? "—";
   document.getElementById("liveTime").textContent = latest?.timestamp_real || "—";
+
+  if (currentConfig?.mode) {
+    document.getElementById("workMode").textContent = currentConfig.mode;
+  }
 
   const statusEl = document.getElementById("currentStatus");
   statusEl.className = "status-badge";
@@ -56,8 +81,8 @@ function updateDashboard(latest, stats, alarms) {
   const lastOn = findLastByType("zmiana_on");
   const lastOff = findLastByType("zmiana_off");
 
-  document.getElementById("plannedOn").textContent = latest?.planned_on || "—";
-  document.getElementById("plannedOff").textContent = latest?.planned_off || "—";
+  document.getElementById("plannedOn").textContent = latest?.planned_on || currentConfig?.manual_on || "—";
+  document.getElementById("plannedOff").textContent = latest?.planned_off || currentConfig?.manual_off || "—";
   document.getElementById("actualOn").textContent = lastOn?.timestamp_real || "—";
   document.getElementById("actualOff").textContent = lastOff?.timestamp_real || "—";
   document.getElementById("luxOn").textContent = lastOn?.lux ?? "—";
@@ -65,8 +90,8 @@ function updateDashboard(latest, stats, alarms) {
   document.getElementById("diffOn").textContent = lastOn?.difference_s ?? "—";
   document.getElementById("diffOff").textContent = lastOff?.difference_s ?? "—";
 
-  document.getElementById("reportPlannedOn").textContent = latest?.planned_on || "—";
-  document.getElementById("reportPlannedOff").textContent = latest?.planned_off || "—";
+  document.getElementById("reportPlannedOn").textContent = latest?.planned_on || currentConfig?.manual_on || "—";
+  document.getElementById("reportPlannedOff").textContent = latest?.planned_off || currentConfig?.manual_off || "—";
   document.getElementById("reportActualOn").textContent = lastOn?.timestamp_real || "—";
   document.getElementById("reportActualOff").textContent = lastOff?.timestamp_real || "—";
   document.getElementById("reportDiffOn").textContent = lastOn?.difference_s ?? "—";
@@ -141,6 +166,72 @@ function renderTable() {
   });
 }
 
+function updateMapPanel() {
+  const latest = allData.length ? allData[allData.length - 1] : null;
+
+  document.getElementById("mapDeviceId").textContent = latest?.device_id || "szafa_01";
+  document.getElementById("mapLat").textContent = currentConfig?.lat ?? "—";
+  document.getElementById("mapLon").textContent = currentConfig?.lon ?? "—";
+  document.getElementById("mapMode").textContent = currentConfig?.mode ?? "—";
+  document.getElementById("mapState").textContent = latest?.state ?? "—";
+  document.getElementById("mapLastRead").textContent = latest?.timestamp_real || "—";
+}
+
+function initOrUpdateMap() {
+  if (!currentConfig) return;
+
+  const lat = Number(currentConfig.lat);
+  const lon = Number(currentConfig.lon);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+  if (!mapInstance) {
+    mapInstance = L.map("map").setView([lat, lon], 13);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "&copy; OpenStreetMap contributors"
+    }).addTo(mapInstance);
+
+    markerInstance = L.marker([lat, lon]).addTo(mapInstance);
+    markerInstance.bindPopup("SSO / szafa_01").openPopup();
+  } else {
+    mapInstance.setView([lat, lon], 13);
+
+    if (markerInstance) {
+      markerInstance.setLatLng([lat, lon]);
+    }
+  }
+
+  setTimeout(() => {
+    mapInstance.invalidateSize();
+  }, 200);
+}
+
+async function loadConfig() {
+  try {
+    currentConfig = await fetchJson("/api/config");
+
+    document.getElementById("configLat").value = currentConfig.lat ?? "";
+    document.getElementById("configLon").value = currentConfig.lon ?? "";
+    document.getElementById("configMode").value = currentConfig.mode ?? "AUTO";
+    document.getElementById("manualOn").value = currentConfig.manual_on ?? "19:50";
+    document.getElementById("manualOff").value = currentConfig.manual_off ?? "05:00";
+
+    document.getElementById("locationStatus").textContent =
+      `Aktualna lokalizacja: ${currentConfig.lat}, ${currentConfig.lon}`;
+
+    document.getElementById("modeStatus").textContent =
+      `Aktualny tryb: ${currentConfig.mode}`;
+
+    document.getElementById("workMode").textContent = currentConfig.mode ?? "AUTO";
+
+    updateMapPanel();
+    initOrUpdateMap();
+  } catch (error) {
+    console.error("Błąd loadConfig:", error);
+  }
+}
+
 async function loadData() {
   try {
     const [data, latest, alarms, stats] = await Promise.all([
@@ -153,6 +244,7 @@ async function loadData() {
     allData = data;
     updateDashboard(latest, stats, alarms);
     renderTable();
+    updateMapPanel();
   } catch (error) {
     console.error(error);
   }
@@ -176,5 +268,75 @@ document.getElementById("checkBtn").addEventListener("click", async () => {
   }
 });
 
-loadData();
+document.getElementById("saveLocationBtn").addEventListener("click", async () => {
+  try {
+    const lat = parseFloat(document.getElementById("configLat").value);
+    const lon = parseFloat(document.getElementById("configLon").value);
+
+    await postJson("/api/config", { lat, lon });
+    await loadConfig();
+    alert("Zapisano lokalizację.");
+  } catch (error) {
+    console.error(error);
+    alert("Nie udało się zapisać lokalizacji.");
+  }
+});
+
+document.getElementById("saveModeBtn").addEventListener("click", async () => {
+  try {
+    const mode = document.getElementById("configMode").value;
+
+    await postJson("/api/config", { mode });
+    await loadConfig();
+    alert("Zapisano tryb pracy.");
+  } catch (error) {
+    console.error(error);
+    alert("Nie udało się zapisać trybu.");
+  }
+});
+
+document.getElementById("saveManualPlanBtn").addEventListener("click", async () => {
+  try {
+    const manual_on = document.getElementById("manualOn").value;
+    const manual_off = document.getElementById("manualOff").value;
+
+    await postJson("/api/config", { manual_on, manual_off });
+    await loadConfig();
+    alert("Zapisano plan ręczny.");
+  } catch (error) {
+    console.error(error);
+    alert("Nie udało się zapisać planu ręcznego.");
+  }
+});
+
+document.getElementById("forceOnBtn").addEventListener("click", async () => {
+  try {
+    const result = await postJson("/api/force", { state: 1 });
+    document.getElementById("forceStatus").textContent =
+      `Status testu: dodano rekord ${result.entry.type} / stan 1`;
+    await loadData();
+  } catch (error) {
+    console.error(error);
+    alert("Nie udało się wymusić ON.");
+  }
+});
+
+document.getElementById("forceOffBtn").addEventListener("click", async () => {
+  try {
+    const result = await postJson("/api/force", { state: 0 });
+    document.getElementById("forceStatus").textContent =
+      `Status testu: dodano rekord ${result.entry.type} / stan 0`;
+    await loadData();
+  } catch (error) {
+    console.error(error);
+    alert("Nie udało się wymusić OFF.");
+  }
+});
+
+async function initApp() {
+  await loadData();
+  await loadConfig();
+}
+
+initApp();
 setInterval(loadData, 15000);
