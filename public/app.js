@@ -53,6 +53,12 @@ function findLastByType(type) {
   return [...allData].reverse().find((item) => item.type === type) || null;
 }
 
+function findLatestRecordWithPlan() {
+  return [...allData].reverse().find(
+    (item) => item.planned_on || item.planned_off
+  ) || null;
+}
+
 function updateDashboard(latest, stats, alarms) {
   document.getElementById("deviceId").textContent = latest?.device_id || "SSO-1";
   document.getElementById("lastTimestamp").textContent = latest?.timestamp_real || "—";
@@ -60,9 +66,9 @@ function updateDashboard(latest, stats, alarms) {
   document.getElementById("liveLux").textContent = latest?.lux ?? "—";
   document.getElementById("liveTime").textContent = latest?.timestamp_real || "—";
 
-  if (currentConfig?.mode) {
-    document.getElementById("workMode").textContent = currentConfig.mode;
-  }
+  const latestPlanRecord = findLatestRecordWithPlan();
+  const lastOn = findLastByType("zmiana_on");
+  const lastOff = findLastByType("zmiana_off");
 
   const statusEl = document.getElementById("currentStatus");
   statusEl.className = "status-badge";
@@ -78,11 +84,14 @@ function updateDashboard(latest, stats, alarms) {
     statusEl.classList.add("status-off");
   }
 
-  const lastOn = findLastByType("zmiana_on");
-  const lastOff = findLastByType("zmiana_off");
+  // Na ten moment tryb w nagłówku pokazuje tylko ustawienie z panelu,
+  // a nie potwierdzony tryb pracy ESP32.
+  document.getElementById("workMode").textContent = currentConfig?.mode || "—";
 
-  document.getElementById("plannedOn").textContent = latest?.planned_on || currentConfig?.manual_on || "—";
-  document.getElementById("plannedOff").textContent = latest?.planned_off || currentConfig?.manual_off || "—";
+  // Planowane godziny pobieramy tylko z danych przychodzących z ESP32
+  document.getElementById("plannedOn").textContent = latestPlanRecord?.planned_on || "—";
+  document.getElementById("plannedOff").textContent = latestPlanRecord?.planned_off || "—";
+
   document.getElementById("actualOn").textContent = lastOn?.timestamp_real || "—";
   document.getElementById("actualOff").textContent = lastOff?.timestamp_real || "—";
   document.getElementById("luxOn").textContent = lastOn?.lux ?? "—";
@@ -90,8 +99,9 @@ function updateDashboard(latest, stats, alarms) {
   document.getElementById("diffOn").textContent = lastOn?.difference_s ?? "—";
   document.getElementById("diffOff").textContent = lastOff?.difference_s ?? "—";
 
-  document.getElementById("reportPlannedOn").textContent = latest?.planned_on || currentConfig?.manual_on || "—";
-  document.getElementById("reportPlannedOff").textContent = latest?.planned_off || currentConfig?.manual_off || "—";
+  // Raport - też tylko z danych z ESP32
+  document.getElementById("reportPlannedOn").textContent = latestPlanRecord?.planned_on || "—";
+  document.getElementById("reportPlannedOff").textContent = latestPlanRecord?.planned_off || "—";
   document.getElementById("reportActualOn").textContent = lastOn?.timestamp_real || "—";
   document.getElementById("reportActualOff").textContent = lastOff?.timestamp_real || "—";
   document.getElementById("reportDiffOn").textContent = lastOn?.difference_s ?? "—";
@@ -223,8 +233,6 @@ async function loadConfig() {
     document.getElementById("modeStatus").textContent =
       `Aktualny tryb: ${currentConfig.mode}`;
 
-    document.getElementById("workMode").textContent = currentConfig.mode ?? "AUTO";
-
     updateMapPanel();
     initOrUpdateMap();
   } catch (error) {
@@ -288,6 +296,7 @@ document.getElementById("saveModeBtn").addEventListener("click", async () => {
 
     await postJson("/api/config", { mode });
     await loadConfig();
+    await loadData();
     alert("Zapisano tryb pracy.");
   } catch (error) {
     console.error(error);
@@ -302,6 +311,7 @@ document.getElementById("saveManualPlanBtn").addEventListener("click", async () 
 
     await postJson("/api/config", { manual_on, manual_off });
     await loadConfig();
+    await loadData();
     alert("Zapisano plan ręczny.");
   } catch (error) {
     console.error(error);
@@ -336,6 +346,7 @@ document.getElementById("forceOffBtn").addEventListener("click", async () => {
 async function initApp() {
   await loadData();
   await loadConfig();
+  await loadData();
 }
 
 initApp();
