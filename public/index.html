@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LUMOS / SSO Monitoring</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="logo">LUMOS / SSO</div>
+      <nav>
+        <button class="nav-btn active" data-tab="dashboard">Dashboard</button>
+        <button class="nav-btn" data-tab="data">Dane</button>
+        <button class="nav-btn" data-tab="report">Raport dzienny</button>
+      </nav>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-item">
+          <span class="label">Urządzenie</span>
+          <strong id="deviceId">SSO-1</strong>
+        </div>
+        <div class="topbar-item">
+          <span class="label">Status</span>
+          <strong id="currentStatus" class="status-badge status-off">OFF</strong>
+        </div>
+        <div class="topbar-item">
+          <span class="label">Tryb</span>
+          <strong id="workMode">AUTO</strong>
+        </div>
+        <div class="topbar-item">
+          <span class="label">Okno pomiarowe</span>
+          <strong id="windowStatus">Poza oknem</strong>
+        </div>
+        <div class="topbar-item">
+          <span class="label">Ostatni odczyt</span>
+          <strong id="lastTimestamp">—</strong>
+        </div>
+      </header>
+
+      <section id="dashboard" class="tab active">
+        <div class="grid cards">
+          <div class="card">
+            <h3>Planowane załączenie</h3>
+            <p id="plannedOn">—</p>
+          </div>
+          <div class="card">
+            <h3>Planowane wyłączenie</h3>
+            <p id="plannedOff">—</p>
+          </div>
+          <div class="card">
+            <h3>Ostatnie fizyczne załączenie</h3>
+            <p id="actualOn">—</p>
+          </div>
+          <div class="card">
+            <h3>Ostatnie fizyczne wyłączenie</h3>
+            <p id="actualOff">—</p>
+          </div>
+          <div class="card">
+            <h3>Lux przy załączeniu</h3>
+            <p id="luxOn">—</p>
+          </div>
+          <div class="card">
+            <h3>Lux przy wyłączeniu</h3>
+            <p id="luxOff">—</p>
+          </div>
+          <div class="card">
+            <h3>Różnica ON</h3>
+            <p id="diffOn">—</p>
+          </div>
+          <div class="card">
+            <h3>Różnica OFF</h3>
+            <p id="diffOff">—</p>
+          </div>
+        </div>
+
+        <div class="grid two-cols">
+          <div class="card">
+            <h3>Aktualny / ostatni stan</h3>
+            <div class="info-row"><span>Stan:</span><strong id="liveState">—</strong></div>
+            <div class="info-row"><span>Lux:</span><strong id="liveLux">—</strong></div>
+            <div class="info-row"><span>Czas:</span><strong id="liveTime">—</strong></div>
+            <button id="checkBtn" class="action-btn">Sprawdź</button>
+            <p class="hint">
+              Przycisk ma być używany poza oknem pomiarowym. Na tym etapie zwraca ostatni znany stan z backendu.
+            </p>
+          </div>
+
+          <div class="card">
+            <h3>Statystyki</h3>
+            <div class="stats-list">
+              <div><span>Wszystkie rekordy</span><strong id="statTotal">0</strong></div>
+              <div><span>Pomiary</span><strong id="statPomiar">0</strong></div>
+              <div><span>Zmiany ON</span><strong id="statOn">0</strong></div>
+              <div><span>Zmiany OFF</span><strong id="statOff">0</strong></div>
+              <div><span>Alarm brak załączenia</span><strong id="statAlarmOn">0</strong></div>
+              <div><span>Alarm brak wyłączenia</span><strong id="statAlarmOff">0</strong></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Ostatnie alarmy</h3>
+          <div id="alarmsList" class="alarms-list"></div>
+        </div>
+      </section>
+
+      <section id="data" class="tab">
+        <div class="card">
+          <h3>Baza danych</h3>
+          <div class="filters">
+            <select id="typeFilter">
+              <option value="all">Wszystkie typy</option>
+              <option value="pomiar">pomiar</option>
+              <option value="zmiana_on">zmiana_on</option>
+              <option value="zmiana_off">zmiana_off</option>
+              <option value="zmiana_poza_oknem">zmiana_poza_oknem</option>
+              <option value="alarm_brak_zalaczenia">alarm_brak_zalaczenia</option>
+              <option value="alarm_brak_wylaczenia">alarm_brak_wylaczenia</option>
+            </select>
+            <label class="checkbox">
+              <input type="checkbox" id="onlyAlarms" />
+              Tylko alarmy
+            </label>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Czas</th>
+                  <th>Typ</th>
+                  <th>Lux</th>
+                  <th>Stan</th>
+                  <th>Plan ON</th>
+                  <th>Plan OFF</th>
+                  <th>Różnica [s]</th>
+                </tr>
+              </thead>
+              <tbody id="dataTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="report" class="tab">
+        <div class="card">
+          <h3>Raport dzienny / nocny</h3>
+          <p class="report-intro">
+            Ten widok jest szkieletem pod późniejszy raport analityczny, który będzie bazą do oceny działania układu oraz przygotowania danych wejściowych dla sieci neuronowej.
+          </p>
+        </div>
+
+        <div class="grid cards">
+          <div class="card">
+            <h3>Obliczona godzina załączenia</h3>
+            <p id="reportPlannedOn">—</p>
+          </div>
+          <div class="card">
+            <h3>Fizyczna godzina załączenia</h3>
+            <p id="reportActualOn">—</p>
+          </div>
+          <div class="card">
+            <h3>Różnica czasu ON</h3>
+            <p id="reportDiffOn">—</p>
+          </div>
+          <div class="card">
+            <h3>Lux przy załączeniu</h3>
+            <p id="reportLuxOn">—</p>
+          </div>
+
+          <div class="card">
+            <h3>Obliczona godzina wyłączenia</h3>
+            <p id="reportPlannedOff">—</p>
+          </div>
+          <div class="card">
+            <h3>Fizyczna godzina wyłączenia</h3>
+            <p id="reportActualOff">—</p>
+          </div>
+          <div class="card">
+            <h3>Różnica czasu OFF</h3>
+            <p id="reportDiffOff">—</p>
+          </div>
+          <div class="card">
+            <h3>Lux przy wyłączeniu</h3>
+            <p id="reportLuxOff">—</p>
+          </div>
+        </div>
+
+        <div class="grid two-cols">
+          <div class="card">
+            <h3>1 godzina przed załączeniem</h3>
+            <ul class="report-list">
+              <li>Min: <strong>—</strong></li>
+              <li>Max: <strong>—</strong></li>
+              <li>Średnia: <strong>—</strong></li>
+              <li>Liczba próbek: <strong>—</strong></li>
+            </ul>
+            <div class="chart-placeholder">Miejsce na wykres lux przed ON</div>
+          </div>
+
+          <div class="card">
+            <h3>1 godzina po załączeniu</h3>
+            <ul class="report-list">
+              <li>Min: <strong>—</strong></li>
+              <li>Max: <strong>—</strong></li>
+              <li>Średnia: <strong>—</strong></li>
+              <li>Liczba próbek: <strong>—</strong></li>
+            </ul>
+            <div class="chart-placeholder">Miejsce na wykres lux po ON</div>
+          </div>
+
+          <div class="card">
+            <h3>1 godzina przed wyłączeniem</h3>
+            <ul class="report-list">
+              <li>Min: <strong>—</strong></li>
+              <li>Max: <strong>—</strong></li>
+              <li>Średnia: <strong>—</strong></li>
+              <li>Liczba próbek: <strong>—</strong></li>
+            </ul>
+            <div class="chart-placeholder">Miejsce na wykres lux przed OFF</div>
+          </div>
+
+          <div class="card">
+            <h3>1 godzina po wyłączeniu</h3>
+            <ul class="report-list">
+              <li>Min: <strong>—</strong></li>
+              <li>Max: <strong>—</strong></li>
+              <li>Średnia: <strong>—</strong></li>
+              <li>Liczba próbek: <strong>—</strong></li>
+            </ul>
+            <div class="chart-placeholder">Miejsce na wykres lux po OFF</div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
