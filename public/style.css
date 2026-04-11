@@ -1,0 +1,275 @@
+:root {
+  --bg: #0a0d0b;
+  --panel: #111612;
+  --panel-2: #161d18;
+  --border: #263126;
+  --text: #e8f5e9;
+  --muted: #9fb29f;
+  --green: #38d66b;
+  --yellow: #d8c54f;
+  --red: #ff5c5c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  background: #0d120f;
+  border-right: 1px solid var(--border);
+  padding: 24px 16px;
+}
+
+.logo {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--green);
+  margin-bottom: 24px;
+}
+
+.nav-btn {
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.nav-btn.active {
+  border-color: var(--green);
+  box-shadow: 0 0 0 1px rgba(56, 214, 107, 0.2);
+}
+
+.main {
+  padding: 20px;
+}
+
+.topbar {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.topbar-item,
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px;
+}
+
+.label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 6px 12px;
+  border-radius: 999px;
+}
+
+.status-on {
+  background: rgba(56, 214, 107, 0.15);
+  color: var(--green);
+}
+
+.status-off {
+  background: rgba(216, 197, 79, 0.15);
+  color: var(--yellow);
+}
+
+.status-alarm {
+  background: rgba(255, 92, 92, 0.15);
+  color: var(--red);
+}
+
+.grid {
+  display: grid;
+  gap: 16px;
+}
+
+.cards {
+  grid-template-columns: repeat(4, 1fr);
+  margin-bottom: 20px;
+}
+
+.two-cols {
+  grid-template-columns: 1fr 1fr;
+  margin-bottom: 20px;
+}
+
+.card h3 {
+  margin-top: 0;
+  margin-bottom: 12px;
+  color: var(--green);
+  font-size: 18px;
+}
+
+.card p {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.info-row,
+.stats-list div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+
+.action-btn {
+  margin-top: 14px;
+  padding: 12px 18px;
+  border: none;
+  border-radius: 12px;
+  background: var(--green);
+  color: #041108;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.action-btn:disabled {
+  background: #314235;
+  color: #8a998d;
+  cursor: not-allowed;
+}
+
+.hint,
+.report-intro {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.alarms-list {
+  display: grid;
+  gap: 10px;
+}
+
+.alarm-item {
+  background: rgba(255, 92, 92, 0.08);
+  border: 1px solid rgba(255, 92, 92, 0.25);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.alarm-item strong {
+  color: var(--red);
+}
+
+.filters {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+  align-items: center;
+}
+
+select,
+input[type="date"] {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.checkbox {
+  color: var(--muted);
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 12px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-size: 14px;
+}
+
+th {
+  color: var(--green);
+}
+
+tr.alarm-row {
+  background: rgba(255, 92, 92, 0.06);
+}
+
+.report-list {
+  margin: 0 0 16px 0;
+  padding-left: 18px;
+  color: var(--text);
+}
+
+.report-list li {
+  margin-bottom: 8px;
+}
+
+.chart-placeholder {
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  min-height: 180px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  background: var(--panel-2);
+}
+
+.tab {
+  display: none;
+}
+
+.tab.active {
+  display: block;
+}
+
+@media (max-width: 1200px) {
+  .cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .topbar {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .app {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}
