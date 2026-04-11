@@ -17,6 +17,19 @@ let config = {
   manual_off: "05:00"
 };
 
+// bieżący status urządzenia - to będzie nadpisywane przez ESP
+let deviceStatus = {
+  device_id: "szafa_01",
+  mode: "AUTO",
+  planned_on: null,
+  planned_off: null,
+  window_status: "unknown",
+  state: null,
+  lux: null,
+  timestamp_real: null,
+  updated_at: null
+};
+
 // testowe dane startowe
 data.push(
   {
@@ -50,6 +63,25 @@ app.post("/api/data", (req, res) => {
 
   data.push(entry);
   res.json({ status: "ok" });
+});
+
+// NOWY endpoint: bieżący status z ESP
+app.post("/api/device-status", (req, res) => {
+  deviceStatus = {
+    ...deviceStatus,
+    ...req.body,
+    updated_at: new Date().toISOString()
+  };
+
+  res.json({
+    status: "ok",
+    deviceStatus
+  });
+});
+
+// odczyt bieżącego statusu
+app.get("/api/device-status", (req, res) => {
+  res.json(deviceStatus);
 });
 
 // wszystkie dane
