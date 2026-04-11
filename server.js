@@ -9,6 +9,14 @@ app.use(express.static(path.join(__dirname, "public")));
 
 let data = [];
 
+let config = {
+  lat: 53.6967,
+  lon: 19.9646,
+  mode: "AUTO",
+  manual_on: "19:50",
+  manual_off: "05:00"
+};
+
 // testowe dane startowe
 data.push(
   {
@@ -76,13 +84,14 @@ app.get("/api/stats", (req, res) => {
     zmiana_off: data.filter((x) => x.type === "zmiana_off").length,
     zmiana_poza_oknem: data.filter((x) => x.type === "zmiana_poza_oknem").length,
     alarm_brak_zalaczenia: data.filter((x) => x.type === "alarm_brak_zalaczenia").length,
-    alarm_brak_wylaczenia: data.filter((x) => x.type === "alarm_brak_wylaczenia").length
+    alarm_brak_wylaczenia: data.filter((x) => x.type === "alarm_brak_wylaczenia").length,
+    test_manual: data.filter((x) => x.type === "test_manual").length
   };
 
   res.json(stats);
 });
 
-// przycisk "sprawdź" - na razie wersja frontendowa/mock
+// przycisk "sprawdź" - na razie wersja mock
 app.get("/api/check-status", (req, res) => {
   const latest = data[data.length - 1] || null;
 
@@ -91,6 +100,64 @@ app.get("/api/check-status", (req, res) => {
     mode: "manual_check_mock",
     message: "Na tym etapie endpoint zwraca ostatni znany stan z backendu.",
     latest
+  });
+});
+
+// konfiguracja
+app.get("/api/config", (req, res) => {
+  res.json(config);
+});
+
+app.post("/api/config", (req, res) => {
+  const { lat, lon, mode, manual_on, manual_off } = req.body;
+
+  if (lat !== undefined) config.lat = Number(lat);
+  if (lon !== undefined) config.lon = Number(lon);
+  if (mode !== undefined) config.mode = mode;
+  if (manual_on !== undefined) config.manual_on = manual_on;
+  if (manual_off !== undefined) config.manual_off = manual_off;
+
+  res.json({
+    status: "ok",
+    config
+  });
+});
+
+// wymuszenie stanu do testów
+app.post("/api/force", (req, res) => {
+  const { state } = req.body;
+
+  if (state !== 0 && state !== 1) {
+    return res.status(400).json({ error: "Nieprawidłowy stan. Użyj 0 lub 1." });
+  }
+
+  const now = new Date();
+  const timestamp =
+    `${now.getFullYear()}-` +
+    `${String(now.getMonth() + 1).padStart(2, "0")}-` +
+    `${String(now.getDate()).padStart(2, "0")} ` +
+    `${String(now.getHours()).padStart(2, "0")}:` +
+    `${String(now.getMinutes()).padStart(2, "0")}:` +
+    `${String(now.getSeconds()).padStart(2, "0")}`;
+
+  const entry = {
+    device_id: "szafa_01",
+    timestamp_real: timestamp,
+    type: "test_manual",
+    lux: null,
+    state,
+    planned_on: config.manual_on,
+    planned_off: config.manual_off,
+    difference_s: null,
+    received_at: new Date().toISOString()
+  };
+
+  data.push(entry);
+
+  res.json({
+    status: "ok",
+    message: "Dodano rekord testowy",
+    entry
   });
 });
 
