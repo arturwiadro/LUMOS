@@ -4,6 +4,7 @@ const tabs = document.querySelectorAll(".tab");
 let allData = [];
 let currentConfig = null;
 let currentDeviceStatus = null;
+let currentCycle = null;
 let mapInstance = null;
 let markerInstance = null;
 
@@ -50,16 +51,12 @@ async function postJson(url, body) {
   return res.json();
 }
 
-function findLastByType(type) {
-  return [...allData].reverse().find((item) => item.type === type) || null;
-}
-
 function updateDashboard(latest, stats, alarms) {
-  const lastOn = findLastByType("zmiana_on");
-  const lastOff = findLastByType("zmiana_off");
-
   document.getElementById("deviceId").textContent =
-    currentDeviceStatus?.device_id || latest?.device_id || "SSO-1";
+    currentDeviceStatus?.device_id ||
+    currentCycle?.device_id ||
+    latest?.device_id ||
+    "SSO-1";
 
   document.getElementById("lastTimestamp").textContent =
     currentDeviceStatus?.timestamp_real ||
@@ -101,32 +98,64 @@ function updateDashboard(latest, stats, alarms) {
   document.getElementById("windowStatus").textContent =
     currentDeviceStatus?.window_status || "—";
 
-  // PLANOWANE GODZINY BIERZEMY TERAZ Z DEVICE STATUS
+  // PLANOWANE GODZINY Z BIEŻĄCEGO STATUSU / CYKLU
   document.getElementById("plannedOn").textContent =
-    currentDeviceStatus?.planned_on || "—";
+    currentDeviceStatus?.planned_on ||
+    currentCycle?.planned_on ||
+    "—";
 
   document.getElementById("plannedOff").textContent =
-    currentDeviceStatus?.planned_off || "—";
+    currentDeviceStatus?.planned_off ||
+    currentCycle?.planned_off ||
+    "—";
 
-  document.getElementById("actualOn").textContent = lastOn?.timestamp_real || "—";
-  document.getElementById("actualOff").textContent = lastOff?.timestamp_real || "—";
-  document.getElementById("luxOn").textContent = lastOn?.lux ?? "—";
-  document.getElementById("luxOff").textContent = lastOff?.lux ?? "—";
-  document.getElementById("diffOn").textContent = lastOn?.difference_s ?? "—";
-  document.getElementById("diffOff").textContent = lastOff?.difference_s ?? "—";
+  // FIZYCZNE ON/OFF WYŁĄCZNIE Z BIEŻĄCEGO CYKLU
+  document.getElementById("actualOn").textContent =
+    currentCycle?.actual_on || "—";
 
+  document.getElementById("actualOff").textContent =
+    currentCycle?.actual_off || "—";
+
+  document.getElementById("luxOn").textContent =
+    formatValue(currentCycle?.lux_on);
+
+  document.getElementById("luxOff").textContent =
+    formatValue(currentCycle?.lux_off);
+
+  document.getElementById("diffOn").textContent =
+    formatValue(currentCycle?.diff_on_s);
+
+  document.getElementById("diffOff").textContent =
+    formatValue(currentCycle?.diff_off_s);
+
+  // RAPORT - też z bieżącego cyklu
   document.getElementById("reportPlannedOn").textContent =
-    currentDeviceStatus?.planned_on || "—";
+    currentCycle?.planned_on ||
+    currentDeviceStatus?.planned_on ||
+    "—";
 
   document.getElementById("reportPlannedOff").textContent =
-    currentDeviceStatus?.planned_off || "—";
+    currentCycle?.planned_off ||
+    currentDeviceStatus?.planned_off ||
+    "—";
 
-  document.getElementById("reportActualOn").textContent = lastOn?.timestamp_real || "—";
-  document.getElementById("reportActualOff").textContent = lastOff?.timestamp_real || "—";
-  document.getElementById("reportDiffOn").textContent = lastOn?.difference_s ?? "—";
-  document.getElementById("reportDiffOff").textContent = lastOff?.difference_s ?? "—";
-  document.getElementById("reportLuxOn").textContent = lastOn?.lux ?? "—";
-  document.getElementById("reportLuxOff").textContent = lastOff?.lux ?? "—";
+  document.getElementById("reportActualOn").textContent =
+    currentCycle?.actual_on || "—";
+
+  document.getElementById("reportActualOff").textContent =
+    currentCycle?.actual_off || "—";
+
+  document.getElementById("reportDiffOn").textContent =
+    formatValue(currentCycle?.diff_on_s);
+
+  document.getElementById("reportDiffOff").textContent =
+    formatValue(currentCycle?.diff_off_s);
+
+  document.getElementById("reportLuxOn").textContent =
+    formatValue(currentCycle?.lux_on);
+
+  document.getElementById("reportLuxOff").textContent =
+    formatValue(currentCycle?.lux_off);
 
   document.getElementById("statTotal").textContent = stats.total ?? 0;
   document.getElementById("statPomiar").textContent = stats.pomiar ?? 0;
@@ -200,6 +229,7 @@ function updateMapPanel() {
 
   document.getElementById("mapDeviceId").textContent =
     currentDeviceStatus?.device_id ||
+    currentCycle?.device_id ||
     latest?.device_id ||
     "szafa_01";
 
@@ -283,6 +313,14 @@ async function loadDeviceStatus() {
   }
 }
 
+async function loadCurrentCycle() {
+  try {
+    currentCycle = await fetchJson("/api/current-cycle");
+  } catch (error) {
+    console.error("Błąd loadCurrentCycle:", error);
+  }
+}
+
 async function loadData() {
   try {
     const [data, latest, alarms, stats] = await Promise.all([
@@ -339,6 +377,8 @@ document.getElementById("saveModeBtn").addEventListener("click", async () => {
 
     await postJson("/api/config", { mode });
     await loadConfig();
+    await loadDeviceStatus();
+    await loadCurrentCycle();
     await loadData();
     alert("Zapisano tryb pracy.");
   } catch (error) {
@@ -354,6 +394,8 @@ document.getElementById("saveManualPlanBtn").addEventListener("click", async () 
 
     await postJson("/api/config", { manual_on, manual_off });
     await loadConfig();
+    await loadDeviceStatus();
+    await loadCurrentCycle();
     await loadData();
     alert("Zapisano plan ręczny.");
   } catch (error) {
@@ -367,6 +409,7 @@ document.getElementById("forceOnBtn").addEventListener("click", async () => {
     const result = await postJson("/api/force", { state: 1 });
     document.getElementById("forceStatus").textContent =
       `Status testu: dodano rekord ${result.entry.type} / stan 1`;
+    await loadCurrentCycle();
     await loadData();
   } catch (error) {
     console.error(error);
@@ -379,6 +422,7 @@ document.getElementById("forceOffBtn").addEventListener("click", async () => {
     const result = await postJson("/api/force", { state: 0 });
     document.getElementById("forceStatus").textContent =
       `Status testu: dodano rekord ${result.entry.type} / stan 0`;
+    await loadCurrentCycle();
     await loadData();
   } catch (error) {
     console.error(error);
@@ -389,11 +433,14 @@ document.getElementById("forceOffBtn").addEventListener("click", async () => {
 async function initApp() {
   await loadConfig();
   await loadDeviceStatus();
+  await loadCurrentCycle();
   await loadData();
 }
 
 initApp();
+
 setInterval(async () => {
   await loadDeviceStatus();
+  await loadCurrentCycle();
   await loadData();
 }, 15000);
