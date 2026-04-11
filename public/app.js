@@ -3,6 +3,7 @@ const tabs = document.querySelectorAll(".tab");
 
 let allData = [];
 let currentConfig = null;
+let currentDeviceStatus = null;
 let mapInstance = null;
 let markerInstance = null;
 
@@ -53,30 +54,38 @@ function findLastByType(type) {
   return [...allData].reverse().find((item) => item.type === type) || null;
 }
 
-function findLatestRecordWithPlan() {
-  return [...allData].reverse().find(
-    (item) => item.planned_on || item.planned_off
-  ) || null;
-}
-
 function updateDashboard(latest, stats, alarms) {
-  document.getElementById("deviceId").textContent = latest?.device_id || "SSO-1";
-  document.getElementById("lastTimestamp").textContent = latest?.timestamp_real || "—";
-  document.getElementById("liveState").textContent = latest?.state ?? "—";
-  document.getElementById("liveLux").textContent = latest?.lux ?? "—";
-  document.getElementById("liveTime").textContent = latest?.timestamp_real || "—";
-
-  const latestPlanRecord = findLatestRecordWithPlan();
   const lastOn = findLastByType("zmiana_on");
   const lastOff = findLastByType("zmiana_off");
+
+  document.getElementById("deviceId").textContent =
+    currentDeviceStatus?.device_id || latest?.device_id || "SSO-1";
+
+  document.getElementById("lastTimestamp").textContent =
+    currentDeviceStatus?.timestamp_real ||
+    latest?.timestamp_real ||
+    "—";
+
+  document.getElementById("liveState").textContent =
+    currentDeviceStatus?.state ?? latest?.state ?? "—";
+
+  document.getElementById("liveLux").textContent =
+    currentDeviceStatus?.lux ?? latest?.lux ?? "—";
+
+  document.getElementById("liveTime").textContent =
+    currentDeviceStatus?.timestamp_real ||
+    latest?.timestamp_real ||
+    "—";
 
   const statusEl = document.getElementById("currentStatus");
   statusEl.className = "status-badge";
 
+  const currentState = currentDeviceStatus?.state ?? latest?.state ?? null;
+
   if (latest && isAlarm(latest.type)) {
     statusEl.textContent = "ALARM";
     statusEl.classList.add("status-alarm");
-  } else if (latest?.state === 1) {
+  } else if (currentState === 1) {
     statusEl.textContent = "ON";
     statusEl.classList.add("status-on");
   } else {
@@ -84,13 +93,20 @@ function updateDashboard(latest, stats, alarms) {
     statusEl.classList.add("status-off");
   }
 
-  // Na ten moment tryb w nagłówku pokazuje tylko ustawienie z panelu,
-  // a nie potwierdzony tryb pracy ESP32.
-  document.getElementById("workMode").textContent = currentConfig?.mode || "—";
+  document.getElementById("workMode").textContent =
+    currentDeviceStatus?.mode ||
+    currentConfig?.mode ||
+    "—";
 
-  // Planowane godziny pobieramy tylko z danych przychodzących z ESP32
-  document.getElementById("plannedOn").textContent = latestPlanRecord?.planned_on || "—";
-  document.getElementById("plannedOff").textContent = latestPlanRecord?.planned_off || "—";
+  document.getElementById("windowStatus").textContent =
+    currentDeviceStatus?.window_status || "—";
+
+  // PLANOWANE GODZINY BIERZEMY TERAZ Z DEVICE STATUS
+  document.getElementById("plannedOn").textContent =
+    currentDeviceStatus?.planned_on || "—";
+
+  document.getElementById("plannedOff").textContent =
+    currentDeviceStatus?.planned_off || "—";
 
   document.getElementById("actualOn").textContent = lastOn?.timestamp_real || "—";
   document.getElementById("actualOff").textContent = lastOff?.timestamp_real || "—";
@@ -99,9 +115,12 @@ function updateDashboard(latest, stats, alarms) {
   document.getElementById("diffOn").textContent = lastOn?.difference_s ?? "—";
   document.getElementById("diffOff").textContent = lastOff?.difference_s ?? "—";
 
-  // Raport - też tylko z danych z ESP32
-  document.getElementById("reportPlannedOn").textContent = latestPlanRecord?.planned_on || "—";
-  document.getElementById("reportPlannedOff").textContent = latestPlanRecord?.planned_off || "—";
+  document.getElementById("reportPlannedOn").textContent =
+    currentDeviceStatus?.planned_on || "—";
+
+  document.getElementById("reportPlannedOff").textContent =
+    currentDeviceStatus?.planned_off || "—";
+
   document.getElementById("reportActualOn").textContent = lastOn?.timestamp_real || "—";
   document.getElementById("reportActualOff").textContent = lastOff?.timestamp_real || "—";
   document.getElementById("reportDiffOn").textContent = lastOn?.difference_s ?? "—";
@@ -179,12 +198,28 @@ function renderTable() {
 function updateMapPanel() {
   const latest = allData.length ? allData[allData.length - 1] : null;
 
-  document.getElementById("mapDeviceId").textContent = latest?.device_id || "szafa_01";
+  document.getElementById("mapDeviceId").textContent =
+    currentDeviceStatus?.device_id ||
+    latest?.device_id ||
+    "szafa_01";
+
   document.getElementById("mapLat").textContent = currentConfig?.lat ?? "—";
   document.getElementById("mapLon").textContent = currentConfig?.lon ?? "—";
-  document.getElementById("mapMode").textContent = currentConfig?.mode ?? "—";
-  document.getElementById("mapState").textContent = latest?.state ?? "—";
-  document.getElementById("mapLastRead").textContent = latest?.timestamp_real || "—";
+
+  document.getElementById("mapMode").textContent =
+    currentDeviceStatus?.mode ||
+    currentConfig?.mode ||
+    "—";
+
+  document.getElementById("mapState").textContent =
+    currentDeviceStatus?.state ??
+    latest?.state ??
+    "—";
+
+  document.getElementById("mapLastRead").textContent =
+    currentDeviceStatus?.timestamp_real ||
+    latest?.timestamp_real ||
+    "—";
 }
 
 function initOrUpdateMap() {
@@ -237,6 +272,14 @@ async function loadConfig() {
     initOrUpdateMap();
   } catch (error) {
     console.error("Błąd loadConfig:", error);
+  }
+}
+
+async function loadDeviceStatus() {
+  try {
+    currentDeviceStatus = await fetchJson("/api/device-status");
+  } catch (error) {
+    console.error("Błąd loadDeviceStatus:", error);
   }
 }
 
@@ -344,10 +387,13 @@ document.getElementById("forceOffBtn").addEventListener("click", async () => {
 });
 
 async function initApp() {
-  await loadData();
   await loadConfig();
+  await loadDeviceStatus();
   await loadData();
 }
 
 initApp();
-setInterval(loadData, 15000);
+setInterval(async () => {
+  await loadDeviceStatus();
+  await loadData();
+}, 15000);
