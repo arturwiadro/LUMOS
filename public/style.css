@@ -273,3 +273,42 @@ tr.alarm-row {
     border-bottom: 1px solid var(--border);
   }
 }
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.form-group label {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.form-group input,
+.form-group select {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  font-size: 14px;
+}
+
+.test-buttons {
+  display: flex;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.danger-btn {
+  background: var(--red);
+  color: white;
+}
+
+#map {
+  width: 100%;
+  min-height: 500px;
+  border-radius: 12px;
+  overflow: hidden;
+}
