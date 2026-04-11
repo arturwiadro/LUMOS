@@ -5,18 +5,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LUMOS / SSO Monitoring</title>
   <link rel="stylesheet" href="style.css" />
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
 </head>
 <body>
   <div class="app">
     <aside class="sidebar">
       <div class="logo">LUMOS / SSO</div>
-   <nav>
-      <button class="nav-btn active" data-tab="dashboard">Dashboard</button>
-      <button class="nav-btn" data-tab="data">Dane</button>
-      <button class="nav-btn" data-tab="report">Raport dzienny</button>
-      <button class="nav-btn" data-tab="settings">Ustawienia</button>
-      <button class="nav-btn" data-tab="mapTab">Mapa</button>  
-  </nav>  
+      <nav>
+        <button class="nav-btn active" data-tab="dashboard">Dashboard</button>
+        <button class="nav-btn" data-tab="data">Dane</button>
+        <button class="nav-btn" data-tab="report">Raport dzienny</button>
+        <button class="nav-btn" data-tab="settings">Ustawienia</button>
+        <button class="nav-btn" data-tab="mapTab">Mapa</button>
+      </nav>
     </aside>
 
     <main class="main">
@@ -43,6 +47,7 @@
         </div>
       </header>
 
+      <!-- DASHBOARD -->
       <section id="dashboard" class="tab active">
         <div class="grid cards">
           <div class="card">
@@ -110,6 +115,7 @@
         </div>
       </section>
 
+      <!-- DANE -->
       <section id="data" class="tab">
         <div class="card">
           <h3>Baza danych</h3>
@@ -122,6 +128,7 @@
               <option value="zmiana_poza_oknem">zmiana_poza_oknem</option>
               <option value="alarm_brak_zalaczenia">alarm_brak_zalaczenia</option>
               <option value="alarm_brak_wylaczenia">alarm_brak_wylaczenia</option>
+              <option value="test_manual">test_manual</option>
             </select>
             <label class="checkbox">
               <input type="checkbox" id="onlyAlarms" />
@@ -148,6 +155,7 @@
         </div>
       </section>
 
+      <!-- RAPORT -->
       <section id="report" class="tab">
         <div class="card">
           <h3>Raport dzienny / nocny</h3>
@@ -238,9 +246,103 @@
           </div>
         </div>
       </section>
+
+      <!-- USTAWIENIA -->
+      <section id="settings" class="tab">
+        <div class="card">
+          <h3>Ustawienia systemu</h3>
+          <p class="report-intro">
+            Ta zakładka służy do konfiguracji lokalizacji, zmiany trybu pracy oraz testowania działania systemu bez konieczności oczekiwania na zmierzch.
+          </p>
+        </div>
+
+        <div class="grid two-cols">
+          <div class="card">
+            <h3>Położenie geograficzne</h3>
+            <div class="form-group">
+              <label for="configLat">Szerokość geograficzna (lat)</label>
+              <input type="number" step="0.000001" id="configLat" />
+            </div>
+            <div class="form-group">
+              <label for="configLon">Długość geograficzna (lon)</label>
+              <input type="number" step="0.000001" id="configLon" />
+            </div>
+            <button id="saveLocationBtn" class="action-btn">Zapisz lokalizację</button>
+            <p class="hint" id="locationStatus">Aktualna lokalizacja: —</p>
+          </div>
+
+          <div class="card">
+            <h3>Tryb pracy</h3>
+            <div class="form-group">
+              <label for="configMode">Wybór trybu</label>
+              <select id="configMode">
+                <option value="AUTO">AUTO</option>
+                <option value="MANUAL">MANUAL</option>
+              </select>
+            </div>
+            <button id="saveModeBtn" class="action-btn">Zapisz tryb</button>
+            <p class="hint" id="modeStatus">Aktualny tryb: —</p>
+          </div>
+        </div>
+
+        <div class="grid two-cols">
+          <div class="card">
+            <h3>Plan ręczny</h3>
+            <div class="form-group">
+              <label for="manualOn">Godzina załączenia (ON)</label>
+              <input type="time" id="manualOn" />
+            </div>
+            <div class="form-group">
+              <label for="manualOff">Godzina wyłączenia (OFF)</label>
+              <input type="time" id="manualOff" />
+            </div>
+            <button id="saveManualPlanBtn" class="action-btn">Zapisz plan ręczny</button>
+            <p class="hint">Sekcja aktywna głównie dla trybu MANUAL.</p>
+          </div>
+
+          <div class="card">
+            <h3>Tryb testowy</h3>
+            <p class="hint">
+              Te przyciski pozwalają zasymulować stan urządzenia i sprawdzić logikę dashboardu, alarmów oraz zapisu rekordów bez czekania na rzeczywiste zdarzenia.
+            </p>
+            <div class="test-buttons">
+              <button id="forceOnBtn" class="action-btn">Wymuś ON</button>
+              <button id="forceOffBtn" class="action-btn danger-btn">Wymuś OFF</button>
+            </div>
+            <p class="hint" id="forceStatus">Status testu: —</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- MAPA -->
+      <section id="mapTab" class="tab">
+        <div class="card">
+          <h3>Mapa lokalizacji urządzenia</h3>
+          <p class="report-intro">
+            Ta zakładka pokazuje lokalizację urządzenia na mapie na podstawie aktualnych danych konfiguracyjnych.
+          </p>
+        </div>
+
+        <div class="grid two-cols">
+          <div class="card">
+            <div id="map"></div>
+          </div>
+
+          <div class="card">
+            <h3>Informacje o urządzeniu</h3>
+            <div class="info-row"><span>Urządzenie:</span><strong id="mapDeviceId">—</strong></div>
+            <div class="info-row"><span>Szerokość:</span><strong id="mapLat">—</strong></div>
+            <div class="info-row"><span>Długość:</span><strong id="mapLon">—</strong></div>
+            <div class="info-row"><span>Tryb:</span><strong id="mapMode">—</strong></div>
+            <div class="info-row"><span>Status:</span><strong id="mapState">—</strong></div>
+            <div class="info-row"><span>Ostatni odczyt:</span><strong id="mapLastRead">—</strong></div>
+          </div>
+        </div>
+      </section>
     </main>
   </div>
 
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
