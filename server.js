@@ -1,5 +1,6 @@
 const express = require("express");
 const path = require("path");
+const { Pool } = require("pg");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7,7 +8,12 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-let data = [];
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL
+    ? { rejectUnauthorized: false }
+    : false
+});
 
 let config = {
   lat: 53.6967,
@@ -17,7 +23,6 @@ let config = {
   manual_off: "05:00"
 };
 
-// bieżący status urządzenia - nadpisywany przez ESP
 let deviceStatus = {
   device_id: "szafa_01",
   mode: "AUTO",
@@ -30,26 +35,19 @@ let deviceStatus = {
   updated_at: null
 };
 
-// bieżący cykl nocny - dane robocze do dashboardu i raportu
 let currentCycle = {
   device_id: "szafa_01",
   cycle_date: null,
-
   planned_on: null,
   planned_off: null,
-
   actual_on: null,
   actual_off: null,
-
   lux_on: null,
   lux_off: null,
-
   diff_on_s: null,
   diff_off_s: null,
-
   alarm_on: false,
   alarm_off: false,
-
   updated_at: null
 };
 
@@ -57,22 +55,16 @@ function resetCurrentCycle() {
   currentCycle = {
     device_id: deviceStatus.device_id || "szafa_01",
     cycle_date: null,
-
     planned_on: null,
     planned_off: null,
-
     actual_on: null,
     actual_off: null,
-
     lux_on: null,
     lux_off: null,
-
     diff_on_s: null,
     diff_off_s: null,
-
     alarm_on: false,
     alarm_off: false,
-
     updated_at: new Date().toISOString()
   };
 }
@@ -93,12 +85,10 @@ function updateCurrentCycleFromEntry(entry) {
 
   const cycleDate = extractCycleDate(entry.timestamp_real);
 
-  // jeżeli zaczyna się nowy dzień/cykl, aktualizujemy cycle_date
   if (!currentCycle.cycle_date && cycleDate) {
     currentCycle.cycle_date = cycleDate;
   }
 
-  // planowane godziny zawsze możemy odświeżać z najnowszego rekordu
   if (entry.planned_on) currentCycle.planned_on = entry.planned_on;
   if (entry.planned_off) currentCycle.planned_off = entry.planned_off;
 
@@ -127,20 +117,59 @@ function updateCurrentCycleFromEntry(entry) {
   currentCycle.updated_at = new Date().toISOString();
 }
 
-// odbiór danych z ESP32
-app.post("/api/data", (req, res) => {
-  const entry = {
-    received_at: new Date().toISOString(),
-    ...req.body
-  };
+async function initDatabase() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS lighting_logs (
+      id BIGSERIAL PRIMARY KEY,
+      device_id TEXT,
+      timestamp_real TEXT,
+      type TEXT,
+      lux DOUBLE PRECISION,
+      state INTEGER,
+      planned_on TEXT,
+      planned_off TEXT,
+      difference_s INTEGER,
+      received_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  console.log("PostgreSQL OK - tabela lighting_logs gotowa");
+}
 
-  data.push(entry);
-  updateCurrentCycleFromEntry(entry);
+app.post("/api/data", async (req, res) => {
+  try {
+    const entry = {
+      received_at: new Date().toISOString(),
+      ...req.body
+    };
 
-  res.json({ status: "ok" });
+    await pool.query(
+      `
+      INSERT INTO lighting_logs
+      (device_id, timestamp_real, type, lux, state, planned_on, planned_off, difference_s, received_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      `,
+      [
+        entry.device_id ?? null,
+        entry.timestamp_real ?? null,
+        entry.type ?? null,
+        entry.lux ?? null,
+        entry.state ?? null,
+        entry.planned_on ?? null,
+        entry.planned_off ?? null,
+        entry.difference_s ?? null,
+        entry.received_at
+      ]
+    );
+
+    updateCurrentCycleFromEntry(entry);
+
+    res.json({ status: "ok" });
+  } catch (error) {
+    console.error("POST /api/data error:", error);
+    res.status(500).json({ error: "Błąd zapisu do bazy danych." });
+  }
 });
 
-// bieżący status z ESP
 app.post("/api/device-status", (req, res) => {
   deviceStatus = {
     ...deviceStatus,
@@ -148,7 +177,6 @@ app.post("/api/device-status", (req, res) => {
     updated_at: new Date().toISOString()
   };
 
-  // planowane godziny odświeżamy też w bieżącym cyklu
   if (req.body.planned_on) currentCycle.planned_on = req.body.planned_on;
   if (req.body.planned_off) currentCycle.planned_off = req.body.planned_off;
   if (!currentCycle.device_id && req.body.device_id) currentCycle.device_id = req.body.device_id;
@@ -164,12 +192,10 @@ app.get("/api/device-status", (req, res) => {
   res.json(deviceStatus);
 });
 
-// bieżący cykl nocny
 app.get("/api/current-cycle", (req, res) => {
   res.json(currentCycle);
 });
 
-// ręczny reset bieżącego cyklu
 app.post("/api/current-cycle/reset", (req, res) => {
   resetCurrentCycle();
   res.json({
@@ -179,50 +205,145 @@ app.post("/api/current-cycle/reset", (req, res) => {
   });
 });
 
-app.get("/api/data", (req, res) => {
-  res.json(data);
-});
+app.get("/api/data", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        id,
+        device_id,
+        timestamp_real,
+        type,
+        lux,
+        state,
+        planned_on,
+        planned_off,
+        difference_s,
+        received_at
+      FROM lighting_logs
+      ORDER BY id ASC
+    `);
 
-app.get("/api/data/latest", (req, res) => {
-  if (!data.length) {
-    return res.status(404).json({ error: "Brak danych" });
+    res.json(result.rows);
+  } catch (error) {
+    console.error("GET /api/data error:", error);
+    res.status(500).json({ error: "Błąd odczytu z bazy danych." });
   }
-  res.json(data[data.length - 1]);
 });
 
-app.get("/api/alarms", (req, res) => {
-  const alarms = data.filter(
-    (item) =>
-      item.type === "alarm_brak_zalaczenia" ||
-      item.type === "alarm_brak_wylaczenia"
-  );
-  res.json(alarms);
+app.get("/api/data/latest", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        id,
+        device_id,
+        timestamp_real,
+        type,
+        lux,
+        state,
+        planned_on,
+        planned_off,
+        difference_s,
+        received_at
+      FROM lighting_logs
+      ORDER BY id DESC
+      LIMIT 1
+    `);
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "Brak danych" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("GET /api/data/latest error:", error);
+    res.status(500).json({ error: "Błąd odczytu ostatniego rekordu." });
+  }
 });
 
-app.get("/api/stats", (req, res) => {
-  const stats = {
-    total: data.length,
-    pomiar: data.filter((x) => x.type === "pomiar").length,
-    zmiana_on: data.filter((x) => x.type === "zmiana_on").length,
-    zmiana_off: data.filter((x) => x.type === "zmiana_off").length,
-    zmiana_poza_oknem: data.filter((x) => x.type === "zmiana_poza_oknem").length,
-    alarm_brak_zalaczenia: data.filter((x) => x.type === "alarm_brak_zalaczenia").length,
-    alarm_brak_wylaczenia: data.filter((x) => x.type === "alarm_brak_wylaczenia").length,
-    test_manual: data.filter((x) => x.type === "test_manual").length
-  };
+app.get("/api/alarms", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        id,
+        device_id,
+        timestamp_real,
+        type,
+        lux,
+        state,
+        planned_on,
+        planned_off,
+        difference_s,
+        received_at
+      FROM lighting_logs
+      WHERE type IN ('alarm_brak_zalaczenia', 'alarm_brak_wylaczenia')
+      ORDER BY id ASC
+    `);
 
-  res.json(stats);
+    res.json(result.rows);
+  } catch (error) {
+    console.error("GET /api/alarms error:", error);
+    res.status(500).json({ error: "Błąd odczytu alarmów." });
+  }
 });
 
-app.get("/api/check-status", (req, res) => {
-  const latest = data[data.length - 1] || null;
+app.get("/api/stats", async (req, res) => {
+  try {
+    const totalResult = await pool.query(`SELECT COUNT(*)::int AS count FROM lighting_logs`);
+    const pomiarResult = await pool.query(`SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'pomiar'`);
+    const onResult = await pool.query(`SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'zmiana_on'`);
+    const offResult = await pool.query(`SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'zmiana_off'`);
+    const pozaResult = await pool.query(`SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'zmiana_poza_oknem'`);
+    const alarmOnResult = await pool.query(`SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'alarm_brak_zalaczenia'`);
+    const alarmOffResult = await pool.query(`SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'alarm_brak_wylaczenia'`);
+    const testResult = await pool.query(`SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'test_manual'`);
 
-  res.json({
-    ok: true,
-    mode: "manual_check_mock",
-    message: "Na tym etapie endpoint zwraca ostatni znany stan z backendu.",
-    latest
-  });
+    res.json({
+      total: totalResult.rows[0].count,
+      pomiar: pomiarResult.rows[0].count,
+      zmiana_on: onResult.rows[0].count,
+      zmiana_off: offResult.rows[0].count,
+      zmiana_poza_oknem: pozaResult.rows[0].count,
+      alarm_brak_zalaczenia: alarmOnResult.rows[0].count,
+      alarm_brak_wylaczenia: alarmOffResult.rows[0].count,
+      test_manual: testResult.rows[0].count
+    });
+  } catch (error) {
+    console.error("GET /api/stats error:", error);
+    res.status(500).json({ error: "Błąd statystyk." });
+  }
+});
+
+app.get("/api/check-status", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        id,
+        device_id,
+        timestamp_real,
+        type,
+        lux,
+        state,
+        planned_on,
+        planned_off,
+        difference_s,
+        received_at
+      FROM lighting_logs
+      ORDER BY id DESC
+      LIMIT 1
+    `);
+
+    const latest = result.rows.length ? result.rows[0] : null;
+
+    res.json({
+      ok: true,
+      mode: "manual_check_mock",
+      message: "Na tym etapie endpoint zwraca ostatni znany stan z backendu.",
+      latest
+    });
+  } catch (error) {
+    console.error("GET /api/check-status error:", error);
+    res.status(500).json({ error: "Błąd sprawdzania statusu." });
+  }
 });
 
 app.get("/api/config", (req, res) => {
@@ -244,57 +365,91 @@ app.post("/api/config", (req, res) => {
   });
 });
 
-app.post("/api/force", (req, res) => {
-  const { state } = req.body;
+app.post("/api/force", async (req, res) => {
+  try {
+    const { state } = req.body;
 
-  if (state !== 0 && state !== 1) {
-    return res.status(400).json({ error: "Nieprawidłowy stan. Użyj 0 lub 1." });
+    if (state !== 0 && state !== 1) {
+      return res.status(400).json({ error: "Nieprawidłowy stan. Użyj 0 lub 1." });
+    }
+
+    const now = new Date();
+    const timestamp =
+      `${now.getFullYear()}-` +
+      `${String(now.getMonth() + 1).padStart(2, "0")}-` +
+      `${String(now.getDate()).padStart(2, "0")} ` +
+      `${String(now.getHours()).padStart(2, "0")}:` +
+      `${String(now.getMinutes()).padStart(2, "0")}:` +
+      `${String(now.getSeconds()).padStart(2, "0")}`;
+
+    const entry = {
+      device_id: "szafa_01",
+      timestamp_real: timestamp,
+      type: "test_manual",
+      lux: null,
+      state,
+      planned_on: config.manual_on,
+      planned_off: config.manual_off,
+      difference_s: null,
+      received_at: new Date().toISOString()
+    };
+
+    await pool.query(
+      `
+      INSERT INTO lighting_logs
+      (device_id, timestamp_real, type, lux, state, planned_on, planned_off, difference_s, received_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      `,
+      [
+        entry.device_id,
+        entry.timestamp_real,
+        entry.type,
+        entry.lux,
+        entry.state,
+        entry.planned_on,
+        entry.planned_off,
+        entry.difference_s,
+        entry.received_at
+      ]
+    );
+
+    res.json({
+      status: "ok",
+      message: "Dodano rekord testowy",
+      entry
+    });
+  } catch (error) {
+    console.error("POST /api/force error:", error);
+    res.status(500).json({ error: "Błąd dodawania rekordu testowego." });
   }
-
-  const now = new Date();
-  const timestamp =
-    `${now.getFullYear()}-` +
-    `${String(now.getMonth() + 1).padStart(2, "0")}-` +
-    `${String(now.getDate()).padStart(2, "0")} ` +
-    `${String(now.getHours()).padStart(2, "0")}:` +
-    `${String(now.getMinutes()).padStart(2, "0")}:` +
-    `${String(now.getSeconds()).padStart(2, "0")}`;
-
-  const entry = {
-    device_id: "szafa_01",
-    timestamp_real: timestamp,
-    type: "test_manual",
-    lux: null,
-    state,
-    planned_on: config.manual_on,
-    planned_off: config.manual_off,
-    difference_s: null,
-    received_at: new Date().toISOString()
-  };
-
-  data.push(entry);
-
-  res.json({
-    status: "ok",
-    message: "Dodano rekord testowy",
-    entry
-  });
 });
 
-app.post("/api/admin/clear-data", (req, res) => {
-  data = [];
-  resetCurrentCycle();
+app.post("/api/admin/clear-data", async (req, res) => {
+  try {
+    await pool.query(`TRUNCATE TABLE lighting_logs RESTART IDENTITY`);
+    resetCurrentCycle();
 
-  res.json({
-    status: "ok",
-    message: "Wyczyszczono dane historyczne i zresetowano bieżący cykl."
-  });
+    res.json({
+      status: "ok",
+      message: "Wyczyszczono dane historyczne i zresetowano bieżący cykl."
+    });
+  } catch (error) {
+    console.error("POST /api/admin/clear-data error:", error);
+    res.status(500).json({ error: "Błąd czyszczenia danych." });
+  }
 });
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-app.listen(PORT, () => {
-  console.log(`Server działa na porcie ${PORT}`);
-});
+initDatabase()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Server działa na porcie ${PORT}`);
+    });
+  })
+  .catch((error) => {
+    console.error("Błąd inicjalizacji PostgreSQL:", error);
+    process.exit(1);
+  });
