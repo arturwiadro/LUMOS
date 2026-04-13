@@ -98,18 +98,16 @@ function updateDashboard(latest, stats, alarms) {
   document.getElementById("windowStatus").textContent =
     currentDeviceStatus?.window_status || "—";
 
-  // PLANOWANE GODZINY Z BIEŻĄCEGO STATUSU / CYKLU
   document.getElementById("plannedOn").textContent =
-    currentDeviceStatus?.planned_on ||
     currentCycle?.planned_on ||
+    currentDeviceStatus?.planned_on ||
     "—";
 
   document.getElementById("plannedOff").textContent =
-    currentDeviceStatus?.planned_off ||
     currentCycle?.planned_off ||
+    currentDeviceStatus?.planned_off ||
     "—";
 
-  // FIZYCZNE ON/OFF WYŁĄCZNIE Z BIEŻĄCEGO CYKLU
   document.getElementById("actualOn").textContent =
     currentCycle?.actual_on || "—";
 
@@ -128,7 +126,6 @@ function updateDashboard(latest, stats, alarms) {
   document.getElementById("diffOff").textContent =
     formatValue(currentCycle?.diff_off_s);
 
-  // RAPORT - też z bieżącego cyklu
   document.getElementById("reportPlannedOn").textContent =
     currentCycle?.planned_on ||
     currentDeviceStatus?.planned_on ||
@@ -364,6 +361,10 @@ document.getElementById("saveLocationBtn").addEventListener("click", async () =>
 
     await postJson("/api/config", { lat, lon });
     await loadConfig();
+    await loadDeviceStatus();
+    await loadCurrentCycle();
+    await loadData();
+
     alert("Zapisano lokalizację.");
   } catch (error) {
     console.error(error);
@@ -380,6 +381,7 @@ document.getElementById("saveModeBtn").addEventListener("click", async () => {
     await loadDeviceStatus();
     await loadCurrentCycle();
     await loadData();
+
     alert("Zapisano tryb pracy.");
   } catch (error) {
     console.error(error);
@@ -397,6 +399,7 @@ document.getElementById("saveManualPlanBtn").addEventListener("click", async () 
     await loadDeviceStatus();
     await loadCurrentCycle();
     await loadData();
+
     alert("Zapisano plan ręczny.");
   } catch (error) {
     console.error(error);
@@ -409,6 +412,8 @@ document.getElementById("forceOnBtn").addEventListener("click", async () => {
     const result = await postJson("/api/force", { state: 1 });
     document.getElementById("forceStatus").textContent =
       `Status testu: dodano rekord ${result.entry.type} / stan 1`;
+
+    await loadDeviceStatus();
     await loadCurrentCycle();
     await loadData();
   } catch (error) {
@@ -422,6 +427,8 @@ document.getElementById("forceOffBtn").addEventListener("click", async () => {
     const result = await postJson("/api/force", { state: 0 });
     document.getElementById("forceStatus").textContent =
       `Status testu: dodano rekord ${result.entry.type} / stan 0`;
+
+    await loadDeviceStatus();
     await loadCurrentCycle();
     await loadData();
   } catch (error) {
