@@ -1,12 +1,11 @@
 const express = require("express");
 const path = require("path");
 const { Pool } = require("pg");
-const nodemailer = require("nodemailer");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 const pool = new Pool({
@@ -80,25 +79,8 @@ function buildReportFileName(cycleDate) {
   return `lumos_raport_${safeDate}.csv`;
 }
 
-function buildSmtpTransporter() {
-  const host = process.env.SMTP_HOST;
-  const port = Number(process.env.SMTP_PORT || 587);
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
-
-  if (!host || !port || !user || !pass) {
-    return null;
-  }
-
-  return nodemailer.createTransport({
-    host,
-    port,
-    secure: port === 465,
-    auth: {
-      user,
-      pass
-    }
-  });
+function toBase64Utf8(text) {
+  return Buffer.from(text, "utf8").toString("base64");
 }
 
 function buildMailText(report) {
@@ -128,6 +110,47 @@ function buildMailText(report) {
     ``,
     `W załączniku znajduje się plik CSV do porównania z danymi SSO.`
   ].join("\n");
+}
+
+function buildMailHtml(report) {
+  const summary = report.summary;
+
+  return `
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <title>Raport LUMOS / SSO</title>
+</head>
+<body style="font-family: Arial, sans-serif; color: #111; line-height: 1.5;">
+  <h2>Raport LUMOS / SSO</h2>
+  <p><strong>Urządzenie:</strong> ${summary.device_id || "-"}</p>
+  <p><strong>Data cyklu:</strong> ${summary.cycle_date || "-"}</p>
+
+  <h3>Załączenie</h3>
+  <p><strong>Planowane:</strong> ${summary.planned_on || "-"}</p>
+  <p><strong>Fizyczne:</strong> ${summary.actual_on || "-"}</p>
+  <p><strong>Różnica ON [s]:</strong> ${summary.diff_on_s ?? "-"}</p>
+  <p><strong>Lux przy załączeniu:</strong> ${summary.lux_on ?? "-"}</p>
+
+  <h3>Wyłączenie</h3>
+  <p><strong>Planowane:</strong> ${summary.planned_off || "-"}</p>
+  <p><strong>Fizyczne:</strong> ${summary.actual_off || "-"}</p>
+  <p><strong>Różnica OFF [s]:</strong> ${summary.diff_off_s ?? "-"}</p>
+  <p><strong>Lux przy wyłączeniu:</strong> ${summary.lux_off ?? "-"}</p>
+
+  <h3>Alarmy</h3>
+  <p><strong>Brak załączenia:</strong> ${summary.alarm_on ? "TAK" : "NIE"}</p>
+  <p><strong>Brak wyłączenia:</strong> ${summary.alarm_off ? "TAK" : "NIE"}</p>
+
+  <h3>Zakres raportu</h3>
+  <p><strong>Zakres danych:</strong> ${report.range.start} → ${report.range.end}</p>
+  <p><strong>Liczba rekordów:</strong> ${report.rows.length}</p>
+
+  <p>W załączniku znajduje się plik CSV do porównania z danymi SSO.</p>
+</body>
+</html>
+  `.trim();
 }
 
 let config = {
@@ -277,6 +300,7 @@ async function initDatabase() {
       range_start TEXT,
       range_end TEXT,
       csv_content TEXT,
+      provider_message_id TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
@@ -284,11 +308,7 @@ async function initDatabase() {
   console.log("PostgreSQL OK - tabele lighting_logs i daily_reports gotowe");
 }
 
-function resolveReportRange({
-  cycleDate,
-  plannedOn,
-  plannedOff
-}) {
+function resolveReportRange({ cycleDate, plannedOn, plannedOff }) {
   if (isFullDateTime(plannedOn) && isFullDateTime(plannedOff)) {
     return {
       start: plannedOn,
@@ -441,11 +461,14 @@ function buildReportCsv(report) {
 }
 
 async function createReportFromCurrentCycle(options = {}) {
-  const baseCycle = {
-    ...currentCycle
-  };
+  const baseCycle = { ...currentCycle };
 
-  const selectedCycleDate = options.cycleDate || baseCycle.cycle_date || extractCycleDate(baseCycle.planned_on) || formatWarsawDateOnly();
+  const selectedCycleDate =
+    options.cycleDate ||
+    baseCycle.cycle_date ||
+    extractCycleDate(baseCycle.planned_on) ||
+    formatWarsawDateOnly();
+
   const plannedOn = options.plannedOn || baseCycle.planned_on || null;
   const plannedOff = options.plannedOff || baseCycle.planned_off || null;
   const deviceId = options.deviceId || baseCycle.device_id || deviceStatus.device_id || "szafa_01";
@@ -478,7 +501,7 @@ async function createReportFromCurrentCycle(options = {}) {
   return report;
 }
 
-async function saveReportToDatabase(report, emailTo, reportType = "manual_send") {
+async function saveReportToDatabase(report, emailTo, reportType = "manual_send", providerMessageId = null) {
   const summary = report.summary;
 
   const result = await pool.query(
@@ -502,10 +525,11 @@ async function saveReportToDatabase(report, emailTo, reportType = "manual_send")
       record_count,
       range_start,
       range_end,
-      csv_content
+      csv_content,
+      provider_message_id
     )
     VALUES
-    ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+    ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
     RETURNING id, created_at
     `,
     [
@@ -526,46 +550,83 @@ async function saveReportToDatabase(report, emailTo, reportType = "manual_send")
       report.rows.length,
       report.range.start,
       report.range.end,
-      report.csv
+      report.csv,
+      providerMessageId
     ]
   );
 
   return result.rows[0];
 }
 
-async function sendReportEmail(report, emailTo) {
-  const transporter = buildSmtpTransporter();
+async function sendReportEmailViaBrevoApi(report, emailTo) {
+  const apiKey = process.env.BREVO_API_KEY || process.env.SMTP_PASS;
+  const from = process.env.REPORT_EMAIL_FROM;
+  const fromName = process.env.REPORT_EMAIL_FROM_NAME || "LUMOS";
+  const toAddress = emailTo || process.env.REPORT_EMAIL_TO;
 
-  if (!transporter) {
-    throw new Error("Brak konfiguracji SMTP. Ustaw SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS.");
+  if (!apiKey) {
+    throw new Error("Brak BREVO_API_KEY. Ustaw BREVO_API_KEY w Railway.");
   }
 
-  const from = process.env.REPORT_EMAIL_FROM || process.env.SMTP_USER;
   if (!from) {
-    throw new Error("Brak adresu nadawcy. Ustaw REPORT_EMAIL_FROM albo SMTP_USER.");
+    throw new Error("Brak REPORT_EMAIL_FROM. Ustaw REPORT_EMAIL_FROM w Railway.");
   }
 
-  if (!emailTo) {
+  if (!toAddress) {
     throw new Error("Brak adresu odbiorcy raportu.");
   }
 
-  const subject = `LUMOS / SSO raport ${report.summary.cycle_date || ""} [${report.summary.device_id || "urzadzenie"}]`;
-
-  const info = await transporter.sendMail({
-    from,
-    to: emailTo,
-    subject,
-    text: buildMailText(report),
-    attachments: [
+  const payload = {
+    sender: {
+      name: fromName,
+      email: from
+    },
+    to: [
       {
-        filename: report.fileName,
-        content: report.csv,
-        contentType: "text/csv; charset=utf-8"
+        email: toAddress
+      }
+    ],
+    subject: `LUMOS / SSO raport ${report.summary.cycle_date || ""} [${report.summary.device_id || "urzadzenie"}]`,
+    htmlContent: buildMailHtml(report),
+    textContent: buildMailText(report),
+    attachment: [
+      {
+        name: report.fileName,
+        content: toBase64Utf8(report.csv)
       }
     ]
+  };
+
+  const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      "api-key": apiKey
+    },
+    body: JSON.stringify(payload)
   });
 
-  return info;
+  const raw = await response.text();
+  let data = null;
+
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch {
+    data = { raw };
+  }
+
+  if (!response.ok) {
+    const details =
+      data?.message ||
+      data?.code ||
+      data?.raw ||
+      `Brevo API error ${response.status}`;
+
+    throw new Error(details);
+  }
+
+  return data;
 }
 
 async function generateAndSendReport({
@@ -580,8 +641,9 @@ async function generateAndSendReport({
     cycleDate
   });
 
-  const saved = await saveReportToDatabase(report, finalEmail, reportType);
-  const mailInfo = await sendReportEmail(report, finalEmail);
+  const providerResponse = await sendReportEmailViaBrevoApi(report, finalEmail);
+  const providerMessageId = providerResponse?.messageId || null;
+  const saved = await saveReportToDatabase(report, finalEmail, reportType, providerMessageId);
 
   if (resetCycleAfterSend) {
     resetCurrentCycle();
@@ -591,7 +653,7 @@ async function generateAndSendReport({
   return {
     report,
     saved,
-    mailInfo,
+    providerResponse,
     email_to: finalEmail
   };
 }
@@ -978,6 +1040,7 @@ app.post("/api/reports/send-now", async (req, res) => {
       email_to: result.email_to,
       report_id: result.saved.id,
       created_at: result.saved.created_at,
+      provider_message_id: result.providerResponse?.messageId || null,
       summary: result.report.summary,
       range: result.report.range,
       rows_count: result.report.rows.length,
@@ -1014,6 +1077,7 @@ app.get("/api/reports/history", async (req, res) => {
         record_count,
         range_start,
         range_end,
+        provider_message_id,
         created_at
       FROM daily_reports
       ORDER BY id DESC
