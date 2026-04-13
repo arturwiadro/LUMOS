@@ -305,6 +305,11 @@ async function initDatabase() {
     )
   `);
 
+  await pool.query(`
+    ALTER TABLE daily_reports
+    ADD COLUMN IF NOT EXISTS provider_message_id TEXT
+  `);
+
   console.log("PostgreSQL OK - tabele lighting_logs i daily_reports gotowe");
 }
 
