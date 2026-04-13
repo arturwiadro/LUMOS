@@ -13,6 +13,28 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
+function formatWarsawDateTime(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Europe/Warsaw",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).formatToParts(date);
+
+  const get = (type) => parts.find((p) => p.type === type)?.value || "00";
+
+  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
+}
+
+function extractCycleDate(timestampReal) {
+  if (!timestampReal || typeof timestampReal !== "string") return null;
+  return timestampReal.slice(0, 10);
+}
+
 let config = {
   lat: 53.6967,
   lon: 19.9646,
@@ -67,26 +89,16 @@ function resetCurrentCycle() {
   };
 }
 
-function extractCycleDate(timestampReal) {
-  if (!timestampReal || typeof timestampReal !== "string") return null;
-  return timestampReal.slice(0, 10);
-}
-
-function formatWarsawDateTime(date = new Date()) {
-  const parts = new Intl.DateTimeFormat("sv-SE", {
-    timeZone: "Europe/Warsaw",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false
-  }).formatToParts(date);
-
-  const get = (type) => parts.find((p) => p.type === type)?.value || "00";
-
-  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
+function applyConfigToDeviceShadow() {
+  deviceStatus.mode = config.mode;
+  if (config.mode === "MANUAL") {
+    deviceStatus.planned_on = config.manual_on;
+    deviceStatus.planned_off = config.manual_off;
+    currentCycle.planned_on = config.manual_on;
+    currentCycle.planned_off = config.manual_off;
+  }
+  currentCycle.updated_at = new Date().toISOString();
+  deviceStatus.updated_at = new Date().toISOString();
 }
 
 function updateCurrentCycleFromEntry(entry) {
@@ -99,7 +111,6 @@ function updateCurrentCycleFromEntry(entry) {
   if (!isRelevantType) return;
 
   const cycleDate = extractCycleDate(entry.timestamp_real);
-
   if (!currentCycle.cycle_date && cycleDate) {
     currentCycle.cycle_date = cycleDate;
   }
@@ -121,12 +132,10 @@ function updateCurrentCycleFromEntry(entry) {
 
   if (entry.type === "alarm_brak_zalaczenia") {
     currentCycle.alarm_on = true;
-    if (entry.planned_on) currentCycle.planned_on = entry.planned_on;
   }
 
   if (entry.type === "alarm_brak_wylaczenia") {
     currentCycle.alarm_off = true;
-    if (entry.planned_off) currentCycle.planned_off = entry.planned_off;
   }
 
   currentCycle.updated_at = new Date().toISOString();
@@ -147,6 +156,7 @@ async function initDatabase() {
       received_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
+
   console.log("PostgreSQL OK - tabela lighting_logs gotowa");
 }
 
@@ -186,24 +196,18 @@ app.post("/api/data", async (req, res) => {
 });
 
 app.post("/api/device-status", (req, res) => {
-  const incoming = { ...req.body };
-
-  // Gdy panel jest w MANUAL, nie pozwalamy aby status z ESP nadpisywał tryb i plan na stronie.
-  if (config.mode === "MANUAL") {
-    incoming.mode = "MANUAL";
-    incoming.planned_on = config.manual_on;
-    incoming.planned_off = config.manual_off;
-  }
-
   deviceStatus = {
     ...deviceStatus,
-    ...incoming,
+    ...req.body,
     updated_at: new Date().toISOString()
   };
 
-  if (incoming.planned_on) currentCycle.planned_on = incoming.planned_on;
-  if (incoming.planned_off) currentCycle.planned_off = incoming.planned_off;
-  if (incoming.device_id) currentCycle.device_id = incoming.device_id;
+  if (req.body.planned_on) currentCycle.planned_on = req.body.planned_on;
+  if (req.body.planned_off) currentCycle.planned_off = req.body.planned_off;
+  if (req.body.device_id) currentCycle.device_id = req.body.device_id;
+  if (!currentCycle.cycle_date && req.body.timestamp_real) {
+    currentCycle.cycle_date = extractCycleDate(req.body.timestamp_real);
+  }
 
   currentCycle.updated_at = new Date().toISOString();
 
@@ -245,7 +249,7 @@ app.get("/api/data", async (req, res) => {
         difference_s,
         received_at
       FROM lighting_logs
-      ORDER BY id DESC
+      ORDER BY id ASC
     `);
 
     res.json(result.rows);
@@ -301,7 +305,7 @@ app.get("/api/alarms", async (req, res) => {
         received_at
       FROM lighting_logs
       WHERE type IN ('alarm_brak_zalaczenia', 'alarm_brak_wylaczenia')
-      ORDER BY id DESC
+      ORDER BY id ASC
     `);
 
     res.json(result.rows);
@@ -362,6 +366,7 @@ app.get("/api/check-status", async (req, res) => {
     res.json({
       ok: true,
       mode: "manual_check_mock",
+      message: "Na tym etapie endpoint zwraca ostatni znany stan z backendu.",
       latest
     });
   } catch (error) {
@@ -383,24 +388,13 @@ app.post("/api/config", (req, res) => {
   if (manual_on !== undefined) config.manual_on = manual_on;
   if (manual_off !== undefined) config.manual_off = manual_off;
 
-  // Od razu aktualizujemy to, co widzi frontend
-  if (config.mode === "MANUAL") {
-    deviceStatus.mode = "MANUAL";
-    deviceStatus.planned_on = config.manual_on;
-    deviceStatus.planned_off = config.manual_off;
-
-    currentCycle.planned_on = config.manual_on;
-    currentCycle.planned_off = config.manual_off;
-  } else {
-    deviceStatus.mode = "AUTO";
-  }
-
-  deviceStatus.updated_at = new Date().toISOString();
-  currentCycle.updated_at = new Date().toISOString();
+  applyConfigToDeviceShadow();
 
   res.json({
     status: "ok",
-    config
+    config,
+    deviceStatus,
+    currentCycle
   });
 });
 
@@ -420,8 +414,8 @@ app.post("/api/force", async (req, res) => {
       type: "test_manual",
       lux: null,
       state,
-      planned_on: config.mode === "MANUAL" ? config.manual_on : (deviceStatus.planned_on ?? null),
-      planned_off: config.mode === "MANUAL" ? config.manual_off : (deviceStatus.planned_off ?? null),
+      planned_on: config.mode === "MANUAL" ? config.manual_on : deviceStatus.planned_on,
+      planned_off: config.mode === "MANUAL" ? config.manual_off : deviceStatus.planned_off,
       difference_s: null,
       received_at: new Date().toISOString()
     };
@@ -460,6 +454,7 @@ app.post("/api/admin/clear-data", async (req, res) => {
   try {
     await pool.query(`TRUNCATE TABLE lighting_logs RESTART IDENTITY`);
     resetCurrentCycle();
+    applyConfigToDeviceShadow();
 
     res.json({
       status: "ok",
@@ -477,6 +472,7 @@ app.get("/", (req, res) => {
 
 initDatabase()
   .then(() => {
+    applyConfigToDeviceShadow();
     app.listen(PORT, () => {
       console.log(`Server działa na porcie ${PORT}`);
     });
