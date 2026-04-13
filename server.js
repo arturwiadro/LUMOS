@@ -1,6 +1,7 @@
 const express = require("express");
 const path = require("path");
 const { Pool } = require("pg");
+const nodemailer = require("nodemailer");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -30,9 +31,103 @@ function formatWarsawDateTime(date = new Date()) {
   return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
 }
 
+function formatWarsawDateOnly(date = new Date()) {
+  return formatWarsawDateTime(date).slice(0, 10);
+}
+
 function extractCycleDate(timestampReal) {
   if (!timestampReal || typeof timestampReal !== "string") return null;
   return timestampReal.slice(0, 10);
+}
+
+function addDaysToDateString(dateString, days) {
+  const [year, month, day] = dateString.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + days);
+
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(date.getUTCDate()).padStart(2, "0");
+
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function isFullDateTime(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value);
+}
+
+function isTimeOnly(value) {
+  return typeof value === "string" && /^\d{2}:\d{2}$/.test(value);
+}
+
+function csvEscape(value) {
+  if (value === null || value === undefined) return "";
+  const stringValue = String(value);
+  if (stringValue.includes('"') || stringValue.includes(",") || stringValue.includes("\n")) {
+    return `"${stringValue.replace(/"/g, '""')}"`;
+  }
+  return stringValue;
+}
+
+function toNumberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function buildReportFileName(cycleDate) {
+  const safeDate = cycleDate || formatWarsawDateOnly();
+  return `lumos_raport_${safeDate}.csv`;
+}
+
+function buildSmtpTransporter() {
+  const host = process.env.SMTP_HOST;
+  const port = Number(process.env.SMTP_PORT || 587);
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+
+  if (!host || !port || !user || !pass) {
+    return null;
+  }
+
+  return nodemailer.createTransport({
+    host,
+    port,
+    secure: port === 465,
+    auth: {
+      user,
+      pass
+    }
+  });
+}
+
+function buildMailText(report) {
+  const summary = report.summary;
+
+  return [
+    `Raport LUMOS / SSO`,
+    ``,
+    `Urządzenie: ${summary.device_id || "-"}`,
+    `Data cyklu: ${summary.cycle_date || "-"}`,
+    ``,
+    `Planowane załączenie: ${summary.planned_on || "-"}`,
+    `Fizyczne załączenie: ${summary.actual_on || "-"}`,
+    `Różnica ON [s]: ${summary.diff_on_s ?? "-"}`,
+    `Lux przy załączeniu: ${summary.lux_on ?? "-"}`,
+    ``,
+    `Planowane wyłączenie: ${summary.planned_off || "-"}`,
+    `Fizyczne wyłączenie: ${summary.actual_off || "-"}`,
+    `Różnica OFF [s]: ${summary.diff_off_s ?? "-"}`,
+    `Lux przy wyłączeniu: ${summary.lux_off ?? "-"}`,
+    ``,
+    `Alarm brak załączenia: ${summary.alarm_on ? "TAK" : "NIE"}`,
+    `Alarm brak wyłączenia: ${summary.alarm_off ? "TAK" : "NIE"}`,
+    ``,
+    `Liczba rekordów w raporcie: ${report.rows.length}`,
+    `Zakres danych: ${report.range.start} -> ${report.range.end}`,
+    ``,
+    `W załączniku znajduje się plik CSV do porównania z danymi SSO.`
+  ].join("\n");
 }
 
 let config = {
@@ -71,6 +166,8 @@ let currentCycle = {
   updated_at: null
 };
 
+let lastAutoReportKey = null;
+
 function resetCurrentCycle() {
   currentCycle = {
     device_id: deviceStatus.device_id || "szafa_01",
@@ -91,12 +188,14 @@ function resetCurrentCycle() {
 
 function applyConfigToDeviceShadow() {
   deviceStatus.mode = config.mode;
+
   if (config.mode === "MANUAL") {
     deviceStatus.planned_on = config.manual_on;
     deviceStatus.planned_off = config.manual_off;
     currentCycle.planned_on = config.manual_on;
     currentCycle.planned_off = config.manual_off;
   }
+
   currentCycle.updated_at = new Date().toISOString();
   deviceStatus.updated_at = new Date().toISOString();
 }
@@ -157,7 +256,385 @@ async function initDatabase() {
     )
   `);
 
-  console.log("PostgreSQL OK - tabela lighting_logs gotowa");
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS daily_reports (
+      id BIGSERIAL PRIMARY KEY,
+      device_id TEXT,
+      cycle_date TEXT,
+      report_type TEXT,
+      email_to TEXT,
+      planned_on TEXT,
+      planned_off TEXT,
+      actual_on TEXT,
+      actual_off TEXT,
+      diff_on_s INTEGER,
+      diff_off_s INTEGER,
+      lux_on DOUBLE PRECISION,
+      lux_off DOUBLE PRECISION,
+      alarm_on BOOLEAN DEFAULT FALSE,
+      alarm_off BOOLEAN DEFAULT FALSE,
+      record_count INTEGER DEFAULT 0,
+      range_start TEXT,
+      range_end TEXT,
+      csv_content TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
+  console.log("PostgreSQL OK - tabele lighting_logs i daily_reports gotowe");
+}
+
+function resolveReportRange({
+  cycleDate,
+  plannedOn,
+  plannedOff
+}) {
+  if (isFullDateTime(plannedOn) && isFullDateTime(plannedOff)) {
+    return {
+      start: plannedOn,
+      end: plannedOff
+    };
+  }
+
+  const effectiveCycleDate = cycleDate || formatWarsawDateOnly();
+  const nextDay = addDaysToDateString(effectiveCycleDate, 1);
+
+  if (isTimeOnly(plannedOn) && isTimeOnly(plannedOff)) {
+    return {
+      start: `${effectiveCycleDate} ${plannedOn}:00`,
+      end: `${nextDay} ${plannedOff}:00`
+    };
+  }
+
+  return {
+    start: `${effectiveCycleDate} 00:00:00`,
+    end: `${nextDay} 12:00:00`
+  };
+}
+
+async function getLogsForRange(range, deviceId) {
+  const params = [range.start, range.end];
+  let query = `
+    SELECT
+      id,
+      device_id,
+      timestamp_real,
+      type,
+      lux,
+      state,
+      planned_on,
+      planned_off,
+      difference_s,
+      received_at
+    FROM lighting_logs
+    WHERE timestamp_real IS NOT NULL
+      AND timestamp_real >= $1
+      AND timestamp_real <= $2
+  `;
+
+  if (deviceId) {
+    params.push(deviceId);
+    query += ` AND device_id = $3 `;
+  }
+
+  query += ` ORDER BY timestamp_real ASC, id ASC `;
+
+  const result = await pool.query(query, params);
+  return result.rows;
+}
+
+function buildReportSummary(rows, baseCycle) {
+  const summary = {
+    device_id: baseCycle.device_id || deviceStatus.device_id || "szafa_01",
+    cycle_date: baseCycle.cycle_date || formatWarsawDateOnly(),
+    planned_on: baseCycle.planned_on || null,
+    planned_off: baseCycle.planned_off || null,
+    actual_on: baseCycle.actual_on || null,
+    actual_off: baseCycle.actual_off || null,
+    lux_on: baseCycle.lux_on ?? null,
+    lux_off: baseCycle.lux_off ?? null,
+    diff_on_s: baseCycle.diff_on_s ?? null,
+    diff_off_s: baseCycle.diff_off_s ?? null,
+    alarm_on: Boolean(baseCycle.alarm_on),
+    alarm_off: Boolean(baseCycle.alarm_off)
+  };
+
+  if (!summary.planned_on) {
+    const firstWithPlanOn = rows.find((row) => row.planned_on);
+    if (firstWithPlanOn) summary.planned_on = firstWithPlanOn.planned_on;
+  }
+
+  if (!summary.planned_off) {
+    const firstWithPlanOff = rows.find((row) => row.planned_off);
+    if (firstWithPlanOff) summary.planned_off = firstWithPlanOff.planned_off;
+  }
+
+  if (!summary.actual_on) {
+    const onRow = rows.find((row) => row.type === "zmiana_on");
+    if (onRow) {
+      summary.actual_on = onRow.timestamp_real || null;
+      summary.lux_on = onRow.lux ?? null;
+      summary.diff_on_s = onRow.difference_s ?? null;
+    }
+  }
+
+  if (!summary.actual_off) {
+    const offRow = rows.find((row) => row.type === "zmiana_off");
+    if (offRow) {
+      summary.actual_off = offRow.timestamp_real || null;
+      summary.lux_off = offRow.lux ?? null;
+      summary.diff_off_s = offRow.difference_s ?? null;
+    }
+  }
+
+  if (!summary.alarm_on) {
+    summary.alarm_on = rows.some((row) => row.type === "alarm_brak_zalaczenia");
+  }
+
+  if (!summary.alarm_off) {
+    summary.alarm_off = rows.some((row) => row.type === "alarm_brak_wylaczenia");
+  }
+
+  return summary;
+}
+
+function buildReportCsv(report) {
+  const summary = report.summary;
+  const lines = [];
+
+  lines.push("sekcja,klucz,wartosc");
+  lines.push(`podsumowanie,device_id,${csvEscape(summary.device_id)}`);
+  lines.push(`podsumowanie,cycle_date,${csvEscape(summary.cycle_date)}`);
+  lines.push(`podsumowanie,planned_on,${csvEscape(summary.planned_on)}`);
+  lines.push(`podsumowanie,actual_on,${csvEscape(summary.actual_on)}`);
+  lines.push(`podsumowanie,diff_on_s,${csvEscape(summary.diff_on_s)}`);
+  lines.push(`podsumowanie,lux_on,${csvEscape(summary.lux_on)}`);
+  lines.push(`podsumowanie,planned_off,${csvEscape(summary.planned_off)}`);
+  lines.push(`podsumowanie,actual_off,${csvEscape(summary.actual_off)}`);
+  lines.push(`podsumowanie,diff_off_s,${csvEscape(summary.diff_off_s)}`);
+  lines.push(`podsumowanie,lux_off,${csvEscape(summary.lux_off)}`);
+  lines.push(`podsumowanie,alarm_on,${csvEscape(summary.alarm_on ? 1 : 0)}`);
+  lines.push(`podsumowanie,alarm_off,${csvEscape(summary.alarm_off ? 1 : 0)}`);
+  lines.push(`podsumowanie,range_start,${csvEscape(report.range.start)}`);
+  lines.push(`podsumowanie,range_end,${csvEscape(report.range.end)}`);
+  lines.push(`podsumowanie,record_count,${csvEscape(report.rows.length)}`);
+  lines.push("");
+
+  lines.push("id,device_id,timestamp_real,type,lux,state,planned_on,planned_off,difference_s,received_at");
+
+  for (const row of report.rows) {
+    lines.push([
+      csvEscape(row.id),
+      csvEscape(row.device_id),
+      csvEscape(row.timestamp_real),
+      csvEscape(row.type),
+      csvEscape(row.lux),
+      csvEscape(row.state),
+      csvEscape(row.planned_on),
+      csvEscape(row.planned_off),
+      csvEscape(row.difference_s),
+      csvEscape(row.received_at)
+    ].join(","));
+  }
+
+  return lines.join("\n");
+}
+
+async function createReportFromCurrentCycle(options = {}) {
+  const baseCycle = {
+    ...currentCycle
+  };
+
+  const selectedCycleDate = options.cycleDate || baseCycle.cycle_date || extractCycleDate(baseCycle.planned_on) || formatWarsawDateOnly();
+  const plannedOn = options.plannedOn || baseCycle.planned_on || null;
+  const plannedOff = options.plannedOff || baseCycle.planned_off || null;
+  const deviceId = options.deviceId || baseCycle.device_id || deviceStatus.device_id || "szafa_01";
+
+  const range = resolveReportRange({
+    cycleDate: selectedCycleDate,
+    plannedOn,
+    plannedOff
+  });
+
+  const rows = await getLogsForRange(range, deviceId);
+  const summary = buildReportSummary(rows, {
+    ...baseCycle,
+    cycle_date: selectedCycleDate,
+    planned_on: plannedOn,
+    planned_off: plannedOff,
+    device_id: deviceId
+  });
+
+  const report = {
+    generated_at: new Date().toISOString(),
+    range,
+    summary,
+    rows
+  };
+
+  report.csv = buildReportCsv(report);
+  report.fileName = buildReportFileName(summary.cycle_date);
+
+  return report;
+}
+
+async function saveReportToDatabase(report, emailTo, reportType = "manual_send") {
+  const summary = report.summary;
+
+  const result = await pool.query(
+    `
+    INSERT INTO daily_reports
+    (
+      device_id,
+      cycle_date,
+      report_type,
+      email_to,
+      planned_on,
+      planned_off,
+      actual_on,
+      actual_off,
+      diff_on_s,
+      diff_off_s,
+      lux_on,
+      lux_off,
+      alarm_on,
+      alarm_off,
+      record_count,
+      range_start,
+      range_end,
+      csv_content
+    )
+    VALUES
+    ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+    RETURNING id, created_at
+    `,
+    [
+      summary.device_id,
+      summary.cycle_date,
+      reportType,
+      emailTo || null,
+      summary.planned_on,
+      summary.planned_off,
+      summary.actual_on,
+      summary.actual_off,
+      toNumberOrNull(summary.diff_on_s),
+      toNumberOrNull(summary.diff_off_s),
+      toNumberOrNull(summary.lux_on),
+      toNumberOrNull(summary.lux_off),
+      Boolean(summary.alarm_on),
+      Boolean(summary.alarm_off),
+      report.rows.length,
+      report.range.start,
+      report.range.end,
+      report.csv
+    ]
+  );
+
+  return result.rows[0];
+}
+
+async function sendReportEmail(report, emailTo) {
+  const transporter = buildSmtpTransporter();
+
+  if (!transporter) {
+    throw new Error("Brak konfiguracji SMTP. Ustaw SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS.");
+  }
+
+  const from = process.env.REPORT_EMAIL_FROM || process.env.SMTP_USER;
+  if (!from) {
+    throw new Error("Brak adresu nadawcy. Ustaw REPORT_EMAIL_FROM albo SMTP_USER.");
+  }
+
+  if (!emailTo) {
+    throw new Error("Brak adresu odbiorcy raportu.");
+  }
+
+  const subject = `LUMOS / SSO raport ${report.summary.cycle_date || ""} [${report.summary.device_id || "urzadzenie"}]`;
+
+  const info = await transporter.sendMail({
+    from,
+    to: emailTo,
+    subject,
+    text: buildMailText(report),
+    attachments: [
+      {
+        filename: report.fileName,
+        content: report.csv,
+        contentType: "text/csv; charset=utf-8"
+      }
+    ]
+  });
+
+  return info;
+}
+
+async function generateAndSendReport({
+  emailTo,
+  reportType = "manual_send",
+  resetCycleAfterSend = false,
+  cycleDate = null
+} = {}) {
+  const finalEmail = emailTo || process.env.REPORT_EMAIL_TO;
+
+  const report = await createReportFromCurrentCycle({
+    cycleDate
+  });
+
+  const saved = await saveReportToDatabase(report, finalEmail, reportType);
+  const mailInfo = await sendReportEmail(report, finalEmail);
+
+  if (resetCycleAfterSend) {
+    resetCurrentCycle();
+    applyConfigToDeviceShadow();
+  }
+
+  return {
+    report,
+    saved,
+    mailInfo,
+    email_to: finalEmail
+  };
+}
+
+function startAutoReportScheduler() {
+  const enabled = String(process.env.AUTO_REPORT_ENABLED || "true").toLowerCase() !== "false";
+
+  if (!enabled) {
+    console.log("Auto-raport 10:00 wyłączony przez AUTO_REPORT_ENABLED=false");
+    return;
+  }
+
+  setInterval(async () => {
+    try {
+      const nowWarsaw = formatWarsawDateTime(new Date());
+      const datePart = nowWarsaw.slice(0, 10);
+      const hourPart = nowWarsaw.slice(11, 13);
+      const minutePart = nowWarsaw.slice(14, 16);
+      const autoKey = `${datePart} ${hourPart}:${minutePart}`;
+
+      if (hourPart === "10" && minutePart === "00" && lastAutoReportKey !== autoKey) {
+        lastAutoReportKey = autoKey;
+
+        console.log(`[AUTO REPORT] Start ${autoKey}`);
+
+        try {
+          const result = await generateAndSendReport({
+            emailTo: process.env.REPORT_EMAIL_TO,
+            reportType: "auto_10_00",
+            resetCycleAfterSend: true
+          });
+
+          console.log(
+            `[AUTO REPORT] Wysłano raport ID=${result.saved.id} na ${result.email_to || "-"}`
+          );
+        } catch (sendError) {
+          console.error("[AUTO REPORT] Błąd generowania lub wysyłki raportu:", sendError);
+        }
+      }
+    } catch (error) {
+      console.error("[AUTO REPORT] Błąd schedulera:", error);
+    }
+  }, 30000);
 }
 
 app.post("/api/data", async (req, res) => {
@@ -450,6 +927,140 @@ app.post("/api/force", async (req, res) => {
   }
 });
 
+app.get("/api/reports/preview", async (req, res) => {
+  try {
+    const cycleDate = req.query.cycle_date || null;
+    const report = await createReportFromCurrentCycle({ cycleDate });
+
+    res.json({
+      status: "ok",
+      summary: report.summary,
+      range: report.range,
+      rows_count: report.rows.length,
+      file_name: report.fileName
+    });
+  } catch (error) {
+    console.error("GET /api/reports/preview error:", error);
+    res.status(500).json({ error: "Błąd generowania podglądu raportu." });
+  }
+});
+
+app.get("/api/reports/csv", async (req, res) => {
+  try {
+    const cycleDate = req.query.cycle_date || null;
+    const report = await createReportFromCurrentCycle({ cycleDate });
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${report.fileName}"`);
+    res.send(report.csv);
+  } catch (error) {
+    console.error("GET /api/reports/csv error:", error);
+    res.status(500).json({ error: "Błąd generowania pliku CSV." });
+  }
+});
+
+app.post("/api/reports/send-now", async (req, res) => {
+  try {
+    const emailTo = req.body?.email_to || process.env.REPORT_EMAIL_TO || null;
+    const resetCycleAfterSend = req.body?.reset_cycle_after_send === true;
+    const cycleDate = req.body?.cycle_date || null;
+
+    const result = await generateAndSendReport({
+      emailTo,
+      reportType: "manual_send",
+      resetCycleAfterSend,
+      cycleDate
+    });
+
+    res.json({
+      status: "ok",
+      message: "Raport został wygenerowany i wysłany mailem.",
+      email_to: result.email_to,
+      report_id: result.saved.id,
+      created_at: result.saved.created_at,
+      summary: result.report.summary,
+      range: result.report.range,
+      rows_count: result.report.rows.length,
+      file_name: result.report.fileName
+    });
+  } catch (error) {
+    console.error("POST /api/reports/send-now error:", error);
+    res.status(500).json({
+      error: "Błąd generowania lub wysyłki raportu.",
+      details: error.message
+    });
+  }
+});
+
+app.get("/api/reports/history", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        id,
+        device_id,
+        cycle_date,
+        report_type,
+        email_to,
+        planned_on,
+        planned_off,
+        actual_on,
+        actual_off,
+        diff_on_s,
+        diff_off_s,
+        lux_on,
+        lux_off,
+        alarm_on,
+        alarm_off,
+        record_count,
+        range_start,
+        range_end,
+        created_at
+      FROM daily_reports
+      ORDER BY id DESC
+      LIMIT 100
+    `);
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error("GET /api/reports/history error:", error);
+    res.status(500).json({ error: "Błąd odczytu historii raportów." });
+  }
+});
+
+app.get("/api/reports/history/:id/csv", async (req, res) => {
+  try {
+    const reportId = Number(req.params.id);
+
+    if (!Number.isInteger(reportId)) {
+      return res.status(400).json({ error: "Nieprawidłowe ID raportu." });
+    }
+
+    const result = await pool.query(
+      `
+      SELECT id, cycle_date, csv_content
+      FROM daily_reports
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [reportId]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "Nie znaleziono raportu." });
+    }
+
+    const row = result.rows[0];
+    const fileName = buildReportFileName(row.cycle_date);
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    res.send(row.csv_content || "");
+  } catch (error) {
+    console.error("GET /api/reports/history/:id/csv error:", error);
+    res.status(500).json({ error: "Błąd pobierania archiwalnego CSV." });
+  }
+});
+
 app.post("/api/admin/clear-data", async (req, res) => {
   try {
     await pool.query(`TRUNCATE TABLE lighting_logs RESTART IDENTITY`);
@@ -473,6 +1084,8 @@ app.get("/", (req, res) => {
 initDatabase()
   .then(() => {
     applyConfigToDeviceShadow();
+    startAutoReportScheduler();
+
     app.listen(PORT, () => {
       console.log(`Server działa na porcie ${PORT}`);
     });
