@@ -10,9 +10,7 @@ app.use(express.static(path.join(__dirname, "public")));
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL
-    ? { rejectUnauthorized: false }
-    : false
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
 let config = {
@@ -72,6 +70,23 @@ function resetCurrentCycle() {
 function extractCycleDate(timestampReal) {
   if (!timestampReal || typeof timestampReal !== "string") return null;
   return timestampReal.slice(0, 10);
+}
+
+function formatWarsawDateTime(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Europe/Warsaw",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).formatToParts(date);
+
+  const get = (type) => parts.find((p) => p.type === type)?.value || "00";
+
+  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
 }
 
 function updateCurrentCycleFromEntry(entry) {
@@ -171,15 +186,25 @@ app.post("/api/data", async (req, res) => {
 });
 
 app.post("/api/device-status", (req, res) => {
+  const incoming = { ...req.body };
+
+  // Gdy panel jest w MANUAL, nie pozwalamy aby status z ESP nadpisywał tryb i plan na stronie.
+  if (config.mode === "MANUAL") {
+    incoming.mode = "MANUAL";
+    incoming.planned_on = config.manual_on;
+    incoming.planned_off = config.manual_off;
+  }
+
   deviceStatus = {
     ...deviceStatus,
-    ...req.body,
+    ...incoming,
     updated_at: new Date().toISOString()
   };
 
-  if (req.body.planned_on) currentCycle.planned_on = req.body.planned_on;
-  if (req.body.planned_off) currentCycle.planned_off = req.body.planned_off;
-  if (!currentCycle.device_id && req.body.device_id) currentCycle.device_id = req.body.device_id;
+  if (incoming.planned_on) currentCycle.planned_on = incoming.planned_on;
+  if (incoming.planned_off) currentCycle.planned_off = incoming.planned_off;
+  if (incoming.device_id) currentCycle.device_id = incoming.device_id;
+
   currentCycle.updated_at = new Date().toISOString();
 
   res.json({
@@ -220,7 +245,7 @@ app.get("/api/data", async (req, res) => {
         difference_s,
         received_at
       FROM lighting_logs
-      ORDER BY id ASC
+      ORDER BY id DESC
     `);
 
     res.json(result.rows);
@@ -276,7 +301,7 @@ app.get("/api/alarms", async (req, res) => {
         received_at
       FROM lighting_logs
       WHERE type IN ('alarm_brak_zalaczenia', 'alarm_brak_wylaczenia')
-      ORDER BY id ASC
+      ORDER BY id DESC
     `);
 
     res.json(result.rows);
@@ -337,7 +362,6 @@ app.get("/api/check-status", async (req, res) => {
     res.json({
       ok: true,
       mode: "manual_check_mock",
-      message: "Na tym etapie endpoint zwraca ostatni znany stan z backendu.",
       latest
     });
   } catch (error) {
@@ -359,6 +383,21 @@ app.post("/api/config", (req, res) => {
   if (manual_on !== undefined) config.manual_on = manual_on;
   if (manual_off !== undefined) config.manual_off = manual_off;
 
+  // Od razu aktualizujemy to, co widzi frontend
+  if (config.mode === "MANUAL") {
+    deviceStatus.mode = "MANUAL";
+    deviceStatus.planned_on = config.manual_on;
+    deviceStatus.planned_off = config.manual_off;
+
+    currentCycle.planned_on = config.manual_on;
+    currentCycle.planned_off = config.manual_off;
+  } else {
+    deviceStatus.mode = "AUTO";
+  }
+
+  deviceStatus.updated_at = new Date().toISOString();
+  currentCycle.updated_at = new Date().toISOString();
+
   res.json({
     status: "ok",
     config
@@ -373,14 +412,7 @@ app.post("/api/force", async (req, res) => {
       return res.status(400).json({ error: "Nieprawidłowy stan. Użyj 0 lub 1." });
     }
 
-    const now = new Date();
-    const timestamp =
-      `${now.getFullYear()}-` +
-      `${String(now.getMonth() + 1).padStart(2, "0")}-` +
-      `${String(now.getDate()).padStart(2, "0")} ` +
-      `${String(now.getHours()).padStart(2, "0")}:` +
-      `${String(now.getMinutes()).padStart(2, "0")}:` +
-      `${String(now.getSeconds()).padStart(2, "0")}`;
+    const timestamp = formatWarsawDateTime(new Date());
 
     const entry = {
       device_id: "szafa_01",
@@ -388,8 +420,8 @@ app.post("/api/force", async (req, res) => {
       type: "test_manual",
       lux: null,
       state,
-      planned_on: config.manual_on,
-      planned_off: config.manual_off,
+      planned_on: config.mode === "MANUAL" ? config.manual_on : (deviceStatus.planned_on ?? null),
+      planned_off: config.mode === "MANUAL" ? config.manual_off : (deviceStatus.planned_off ?? null),
       difference_s: null,
       received_at: new Date().toISOString()
     };
