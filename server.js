@@ -83,6 +83,21 @@ function toBase64Utf8(text) {
   return Buffer.from(text, "utf8").toString("base64");
 }
 
+function parseTimestampString(value) {
+  if (!isFullDateTime(value)) return null;
+
+  const [datePart, timePart] = value.split(" ");
+  const [year, month, day] = datePart.split("-").map(Number);
+  const [hour, minute, second] = timePart.split(":").map(Number);
+
+  const parsed = new Date(year, month - 1, day, hour, minute, second);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function addHours(date, hours) {
+  return new Date(date.getTime() + hours * 60 * 60 * 1000);
+}
+
 function buildMailText(report) {
   const summary = report.summary;
 
@@ -186,6 +201,8 @@ let currentCycle = {
   diff_off_s: null,
   alarm_on: false,
   alarm_off: false,
+  on_finalized: false,
+  off_finalized: false,
   updated_at: null
 };
 
@@ -205,6 +222,8 @@ function resetCurrentCycle() {
     diff_off_s: null,
     alarm_on: false,
     alarm_off: false,
+    on_finalized: false,
+    off_finalized: false,
     updated_at: new Date().toISOString()
   };
 }
@@ -221,6 +240,41 @@ function applyConfigToDeviceShadow() {
 
   currentCycle.updated_at = new Date().toISOString();
   deviceStatus.updated_at = new Date().toISOString();
+}
+
+function finalizeCycleParts() {
+  const nowString = formatWarsawDateTime(new Date());
+  const now = parseTimestampString(nowString);
+
+  if (!now) return;
+
+  let changed = false;
+
+  if (!currentCycle.on_finalized && currentCycle.planned_on) {
+    const plannedOn = parseTimestampString(currentCycle.planned_on);
+    if (plannedOn) {
+      const onWindowEnd = addHours(plannedOn, 1);
+      if (now >= onWindowEnd) {
+        currentCycle.on_finalized = true;
+        changed = true;
+      }
+    }
+  }
+
+  if (!currentCycle.off_finalized && currentCycle.planned_off) {
+    const plannedOff = parseTimestampString(currentCycle.planned_off);
+    if (plannedOff) {
+      const offWindowEnd = addHours(plannedOff, 1);
+      if (now >= offWindowEnd) {
+        currentCycle.off_finalized = true;
+        changed = true;
+      }
+    }
+  }
+
+  if (changed) {
+    currentCycle.updated_at = new Date().toISOString();
+  }
 }
 
 function updateCurrentCycleFromEntry(entry) {
@@ -381,7 +435,9 @@ function buildReportSummary(rows, baseCycle) {
     diff_on_s: baseCycle.diff_on_s ?? null,
     diff_off_s: baseCycle.diff_off_s ?? null,
     alarm_on: Boolean(baseCycle.alarm_on),
-    alarm_off: Boolean(baseCycle.alarm_off)
+    alarm_off: Boolean(baseCycle.alarm_off),
+    on_finalized: Boolean(baseCycle.on_finalized),
+    off_finalized: Boolean(baseCycle.off_finalized)
   };
 
   if (!summary.planned_on) {
@@ -440,6 +496,8 @@ function buildReportCsv(report) {
   lines.push(`podsumowanie,lux_off,${csvEscape(summary.lux_off)}`);
   lines.push(`podsumowanie,alarm_on,${csvEscape(summary.alarm_on ? 1 : 0)}`);
   lines.push(`podsumowanie,alarm_off,${csvEscape(summary.alarm_off ? 1 : 0)}`);
+  lines.push(`podsumowanie,on_finalized,${csvEscape(summary.on_finalized ? 1 : 0)}`);
+  lines.push(`podsumowanie,off_finalized,${csvEscape(summary.off_finalized ? 1 : 0)}`);
   lines.push(`podsumowanie,range_start,${csvEscape(report.range.start)}`);
   lines.push(`podsumowanie,range_end,${csvEscape(report.range.end)}`);
   lines.push(`podsumowanie,record_count,${csvEscape(report.rows.length)}`);
@@ -640,6 +698,8 @@ async function generateAndSendReport({
   resetCycleAfterSend = false,
   cycleDate = null
 } = {}) {
+  finalizeCycleParts();
+
   const finalEmail = emailTo || process.env.REPORT_EMAIL_TO;
 
   const report = await createReportFromCurrentCycle({
@@ -673,6 +733,8 @@ function startAutoReportScheduler() {
 
   setInterval(async () => {
     try {
+      finalizeCycleParts();
+
       const nowWarsaw = formatWarsawDateTime(new Date());
       const datePart = nowWarsaw.slice(0, 10);
       const hourPart = nowWarsaw.slice(11, 13);
@@ -731,6 +793,7 @@ app.post("/api/data", async (req, res) => {
     );
 
     updateCurrentCycleFromEntry(entry);
+    finalizeCycleParts();
 
     res.json({ status: "ok" });
   } catch (error) {
@@ -753,6 +816,8 @@ app.post("/api/device-status", (req, res) => {
     currentCycle.cycle_date = extractCycleDate(req.body.timestamp_real);
   }
 
+  finalizeCycleParts();
+
   currentCycle.updated_at = new Date().toISOString();
 
   res.json({
@@ -762,10 +827,12 @@ app.post("/api/device-status", (req, res) => {
 });
 
 app.get("/api/device-status", (req, res) => {
+  finalizeCycleParts();
   res.json(deviceStatus);
 });
 
 app.get("/api/current-cycle", (req, res) => {
+  finalizeCycleParts();
   res.json(currentCycle);
 });
 
@@ -996,6 +1063,8 @@ app.post("/api/force", async (req, res) => {
 
 app.get("/api/reports/preview", async (req, res) => {
   try {
+    finalizeCycleParts();
+
     const cycleDate = req.query.cycle_date || null;
     const report = await createReportFromCurrentCycle({ cycleDate });
 
@@ -1014,6 +1083,8 @@ app.get("/api/reports/preview", async (req, res) => {
 
 app.get("/api/reports/csv", async (req, res) => {
   try {
+    finalizeCycleParts();
+
     const cycleDate = req.query.cycle_date || null;
     const report = await createReportFromCurrentCycle({ cycleDate });
 
