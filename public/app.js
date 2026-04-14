@@ -32,6 +32,22 @@ function formatValue(value, fallback = "—") {
   return value === undefined || value === null || value === "" ? fallback : value;
 }
 
+// 🔥 NOWA FUNKCJA
+function formatSecondsToReadable(seconds) {
+  if (seconds === null || seconds === undefined || isNaN(seconds)) return "—";
+
+  seconds = Math.abs(Number(seconds));
+
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+
+  if (h > 0) return `${h} h ${m.toString().padStart(2, "0")} min ${s.toString().padStart(2, "0")} s`;
+  if (m > 0) return `${m} min ${s.toString().padStart(2, "0")} s`;
+
+  return `${s} s`;
+}
+
 async function fetchJson(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Błąd ${res.status} dla ${url}`);
@@ -120,11 +136,12 @@ function updateDashboard(latest, stats, alarms) {
   document.getElementById("luxOff").textContent =
     formatValue(currentCycle?.lux_off);
 
+  // 🔥 ZMIANA
   document.getElementById("diffOn").textContent =
-    formatValue(currentCycle?.diff_on_s);
+    formatSecondsToReadable(currentCycle?.diff_on_s);
 
   document.getElementById("diffOff").textContent =
-    formatValue(currentCycle?.diff_off_s);
+    formatSecondsToReadable(currentCycle?.diff_off_s);
 
   document.getElementById("reportPlannedOn").textContent =
     currentCycle?.planned_on ||
@@ -142,11 +159,12 @@ function updateDashboard(latest, stats, alarms) {
   document.getElementById("reportActualOff").textContent =
     currentCycle?.actual_off || "—";
 
+  // 🔥 ZMIANA
   document.getElementById("reportDiffOn").textContent =
-    formatValue(currentCycle?.diff_on_s);
+    formatSecondsToReadable(currentCycle?.diff_on_s);
 
   document.getElementById("reportDiffOff").textContent =
-    formatValue(currentCycle?.diff_off_s);
+    formatSecondsToReadable(currentCycle?.diff_off_s);
 
   document.getElementById("reportLuxOn").textContent =
     formatValue(currentCycle?.lux_on);
@@ -179,7 +197,7 @@ function updateDashboard(latest, stats, alarms) {
           <div>Plan ON: ${formatValue(alarm.planned_on)}</div>
           <div>Plan OFF: ${formatValue(alarm.planned_off)}</div>
           <div>Stan: ${formatValue(alarm.state)}</div>
-          <div>Różnica [s]: ${formatValue(alarm.difference_s)}</div>
+          <div>Różnica: ${formatSecondsToReadable(alarm.difference_s)}</div>
         `;
         alarmsList.appendChild(div);
       });
@@ -214,7 +232,7 @@ function renderTable() {
       <td>${formatValue(row.state)}</td>
       <td>${formatValue(row.planned_on)}</td>
       <td>${formatValue(row.planned_off)}</td>
-      <td>${formatValue(row.difference_s)}</td>
+      <td>${formatSecondsToReadable(row.difference_s)}</td>
     `;
 
     tbody.appendChild(tr);
