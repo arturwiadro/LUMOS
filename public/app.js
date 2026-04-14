@@ -464,8 +464,22 @@ async function initApp() {
 
 initApp();
 
+// 🔥 RELOAD DANYCH (co 5s)
 setInterval(async () => {
   await loadDeviceStatus();
   await loadCurrentCycle();
   await loadData();
-}, 15000);
+}, 5000);
+
+// 🔥 REALTIME ZEGAR (co 1s)
+setInterval(() => {
+  const now = new Date();
+
+  const formatted = now.toLocaleString("pl-PL", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+
+  document.getElementById("liveTime").textContent = formatted;
+}, 1000);
