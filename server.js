@@ -369,25 +369,41 @@ async function initDatabase() {
 
 function resolveReportRange({ cycleDate, plannedOn, plannedOff }) {
   if (isFullDateTime(plannedOn) && isFullDateTime(plannedOff)) {
-    return {
-      start: plannedOn,
-      end: plannedOff
-    };
+    const onDate = parseTimestampString(plannedOn);
+    const offDate = parseTimestampString(plannedOff);
+
+    if (onDate && offDate) {
+      const start = new Date(onDate.getTime() - 60 * 60 * 1000);
+      const end = new Date(offDate.getTime() + 60 * 60 * 1000);
+
+      return {
+        start: formatWarsawDateTime(start),
+        end: formatWarsawDateTime(end)
+      };
+    }
   }
 
   const effectiveCycleDate = cycleDate || formatWarsawDateOnly();
   const nextDay = addDaysToDateString(effectiveCycleDate, 1);
 
   if (isTimeOnly(plannedOn) && isTimeOnly(plannedOff)) {
-    return {
-      start: `${effectiveCycleDate} ${plannedOn}:00`,
-      end: `${nextDay} ${plannedOff}:00`
-    };
+    const onDate = parseTimestampString(`${effectiveCycleDate} ${plannedOn}:00`);
+    const offDate = parseTimestampString(`${nextDay} ${plannedOff}:00`);
+
+    if (onDate && offDate) {
+      const start = new Date(onDate.getTime() - 60 * 60 * 1000);
+      const end = new Date(offDate.getTime() + 60 * 60 * 1000);
+
+      return {
+        start: formatWarsawDateTime(start),
+        end: formatWarsawDateTime(end)
+      };
+    }
   }
 
   return {
     start: `${effectiveCycleDate} 00:00:00`,
-    end: `${nextDay} 12:00:00`
+    end: `${nextDay} 23:59:59`
   };
 }
 
