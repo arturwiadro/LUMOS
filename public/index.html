@@ -5,10 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LUMOS / SSO Monitoring</title>
   <link rel="stylesheet" href="style.css" />
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-  />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 </head>
 <body>
   <div class="app">
@@ -47,7 +44,6 @@
         </div>
       </header>
 
-      <!-- DASHBOARD -->
       <section id="dashboard" class="tab active">
         <div class="grid cards">
           <div class="card">
@@ -115,7 +111,6 @@
         </div>
       </section>
 
-      <!-- DANE -->
       <section id="data" class="tab">
         <div class="card">
           <h3>Baza danych</h3>
@@ -155,13 +150,18 @@
         </div>
       </section>
 
-      <!-- RAPORT -->
       <section id="report" class="tab">
         <div class="card">
           <h3>Raport dzienny / nocny</h3>
           <p class="report-intro">
-            Ten widok jest szkieletem pod późniejszy raport analityczny, który będzie bazą do oceny działania układu oraz przygotowania danych wejściowych dla sieci neuronowej.
+            Ten widok pokazuje analizę historyczną wybranego cyklu nocnego na podstawie zapisanych danych z backendu.
           </p>
+          <div class="filters report-filters">
+            <label for="reportCycleSelect" class="label-inline">Wybierz cykl:</label>
+            <select id="reportCycleSelect">
+              <option value="">Brak danych</option>
+            </select>
+          </div>
         </div>
 
         <div class="grid cards">
@@ -181,7 +181,6 @@
             <h3>Lux przy załączeniu</h3>
             <p id="reportLuxOn">—</p>
           </div>
-
           <div class="card">
             <h3>Obliczona godzina wyłączenia</h3>
             <p id="reportPlannedOff">—</p>
@@ -204,50 +203,79 @@
           <div class="card">
             <h3>1 godzina przed załączeniem</h3>
             <ul class="report-list">
-              <li>Min: <strong>—</strong></li>
-              <li>Max: <strong>—</strong></li>
-              <li>Średnia: <strong>—</strong></li>
-              <li>Liczba próbek: <strong>—</strong></li>
+              <li>Min: <strong id="beforeOnMin">—</strong></li>
+              <li>Max: <strong id="beforeOnMax">—</strong></li>
+              <li>Średnia: <strong id="beforeOnAvg">—</strong></li>
+              <li>Liczba próbek: <strong id="beforeOnCount">—</strong></li>
             </ul>
-            <div class="chart-placeholder">Miejsce na wykres lux przed ON</div>
           </div>
 
           <div class="card">
             <h3>1 godzina po załączeniu</h3>
             <ul class="report-list">
-              <li>Min: <strong>—</strong></li>
-              <li>Max: <strong>—</strong></li>
-              <li>Średnia: <strong>—</strong></li>
-              <li>Liczba próbek: <strong>—</strong></li>
+              <li>Min: <strong id="afterOnMin">—</strong></li>
+              <li>Max: <strong id="afterOnMax">—</strong></li>
+              <li>Średnia: <strong id="afterOnAvg">—</strong></li>
+              <li>Liczba próbek: <strong id="afterOnCount">—</strong></li>
             </ul>
-            <div class="chart-placeholder">Miejsce na wykres lux po ON</div>
           </div>
 
           <div class="card">
             <h3>1 godzina przed wyłączeniem</h3>
             <ul class="report-list">
-              <li>Min: <strong>—</strong></li>
-              <li>Max: <strong>—</strong></li>
-              <li>Średnia: <strong>—</strong></li>
-              <li>Liczba próbek: <strong>—</strong></li>
+              <li>Min: <strong id="beforeOffMin">—</strong></li>
+              <li>Max: <strong id="beforeOffMax">—</strong></li>
+              <li>Średnia: <strong id="beforeOffAvg">—</strong></li>
+              <li>Liczba próbek: <strong id="beforeOffCount">—</strong></li>
             </ul>
-            <div class="chart-placeholder">Miejsce na wykres lux przed OFF</div>
           </div>
 
           <div class="card">
             <h3>1 godzina po wyłączeniu</h3>
             <ul class="report-list">
-              <li>Min: <strong>—</strong></li>
-              <li>Max: <strong>—</strong></li>
-              <li>Średnia: <strong>—</strong></li>
-              <li>Liczba próbek: <strong>—</strong></li>
+              <li>Min: <strong id="afterOffMin">—</strong></li>
+              <li>Max: <strong id="afterOffMax">—</strong></li>
+              <li>Średnia: <strong id="afterOffAvg">—</strong></li>
+              <li>Liczba próbek: <strong id="afterOffCount">—</strong></li>
             </ul>
-            <div class="chart-placeholder">Miejsce na wykres lux po OFF</div>
+          </div>
+        </div>
+
+        <div class="grid two-cols">
+          <div class="card">
+            <h3>Wykres ON — przed / po</h3>
+            <div class="chart-panel">
+              <div class="bar-row">
+                <span>Przed ON</span>
+                <div class="bar-track"><div id="chartBeforeOn" class="bar-fill"></div></div>
+                <strong id="chartBeforeOnValue">—</strong>
+              </div>
+              <div class="bar-row">
+                <span>Po ON</span>
+                <div class="bar-track"><div id="chartAfterOn" class="bar-fill"></div></div>
+                <strong id="chartAfterOnValue">—</strong>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Wykres OFF — przed / po</h3>
+            <div class="chart-panel">
+              <div class="bar-row">
+                <span>Przed OFF</span>
+                <div class="bar-track"><div id="chartBeforeOff" class="bar-fill"></div></div>
+                <strong id="chartBeforeOffValue">—</strong>
+              </div>
+              <div class="bar-row">
+                <span>Po OFF</span>
+                <div class="bar-track"><div id="chartAfterOff" class="bar-fill"></div></div>
+                <strong id="chartAfterOffValue">—</strong>
+              </div>
+            </div>
           </div>
         </div>
       </section>
 
-      <!-- USTAWIENIA -->
       <section id="settings" class="tab">
         <div class="card">
           <h3>Ustawienia systemu</h3>
@@ -314,7 +342,6 @@
         </div>
       </section>
 
-      <!-- MAPA -->
       <section id="mapTab" class="tab">
         <div class="card">
           <h3>Mapa lokalizacji urządzenia</h3>
