@@ -7,6 +7,7 @@ const PORT = process.env.PORT || 3000;
 
 const WINDOW_BEFORE_MIN = 60;
 const WINDOW_AFTER_MIN = 60;
+const REPORT_PADDING_HOURS = 1;
 
 app.use(express.json({ limit: "10mb" }));
 app.use(express.static(path.join(__dirname, "public")));
@@ -580,12 +581,9 @@ function resolveReportRange({ cycleDate, plannedOn, plannedOff }) {
     const offDate = parseTimestampString(plannedOff);
 
     if (onDate && offDate) {
-      const start = new Date(onDate.getTime() - 60 * 60 * 1000);
-      const end = new Date(offDate.getTime() + 60 * 60 * 1000);
-
       return {
-        start: formatWarsawDateTime(start),
-        end: formatWarsawDateTime(end)
+        start: formatWarsawDateTime(addHours(onDate, -REPORT_PADDING_HOURS)),
+        end: formatWarsawDateTime(addHours(offDate, REPORT_PADDING_HOURS))
       };
     }
   }
@@ -598,12 +596,9 @@ function resolveReportRange({ cycleDate, plannedOn, plannedOff }) {
     const offDate = parseTimestampString(`${nextDay} ${plannedOff}:00`);
 
     if (onDate && offDate) {
-      const start = new Date(onDate.getTime() - 60 * 60 * 1000);
-      const end = new Date(offDate.getTime() + 60 * 60 * 1000);
-
       return {
-        start: formatWarsawDateTime(start),
-        end: formatWarsawDateTime(end)
+        start: formatWarsawDateTime(addHours(onDate, -REPORT_PADDING_HOURS)),
+        end: formatWarsawDateTime(addHours(offDate, REPORT_PADDING_HOURS))
       };
     }
   }
@@ -643,6 +638,37 @@ async function getLogsForRange(range, deviceId) {
 
   const result = await pool.query(query, params);
   return result.rows;
+}
+
+async function countLogsForCycleWindow({ plannedOn, plannedOff, deviceId }) {
+  if (!isFullDateTime(plannedOn) || !isFullDateTime(plannedOff)) {
+    return null;
+  }
+
+  const range = resolveReportRange({
+    cycleDate: deriveCycleDateFromPlannedOn(plannedOn),
+    plannedOn,
+    plannedOff
+  });
+
+  const params = [plannedOn, plannedOff, range.start, range.end];
+  let query = `
+    SELECT COUNT(*)::int AS count
+    FROM lighting_logs
+    WHERE planned_on = $1
+      AND planned_off = $2
+      AND timestamp_real IS NOT NULL
+      AND timestamp_real >= $3
+      AND timestamp_real <= $4
+  `;
+
+  if (deviceId) {
+    params.push(deviceId);
+    query += " AND device_id = $5 ";
+  }
+
+  const result = await pool.query(query, params);
+  return result.rows[0]?.count ?? 0;
 }
 
 function pickBestCycleEvent(rows, targetType, plannedFieldName, plannedValue) {
@@ -752,6 +778,9 @@ function buildReportCsv(report) {
   lines.push(`podsumowanie,range_start,${csvEscape(report.range.start)}`);
   lines.push(`podsumowanie,range_end,${csvEscape(report.range.end)}`);
   lines.push(`podsumowanie,record_count,${csvEscape(report.rows.length)}`);
+  if (report.expected_cycle_window_count !== undefined && report.expected_cycle_window_count !== null) {
+    lines.push(`podsumowanie,expected_cycle_window_count,${csvEscape(report.expected_cycle_window_count)}`);
+  }
   lines.push("");
 
   lines.push("id,device_id,timestamp_real,type,lux,state,planned_on,planned_off,difference_s,received_at");
@@ -861,6 +890,11 @@ async function createReportFromDatabaseCycle(options = {}) {
     });
 
     const rows = await getLogsForRange(range, anchor.device_id);
+    const expectedCycleWindowCount = await countLogsForCycleWindow({
+      plannedOn: anchor.planned_on,
+      plannedOff: anchor.planned_off,
+      deviceId: anchor.device_id
+    });
 
     const summary = buildReportSummary(rows, {
       device_id: anchor.device_id,
@@ -885,7 +919,8 @@ async function createReportFromDatabaseCycle(options = {}) {
       anchor,
       range,
       summary,
-      rows
+      rows,
+      expected_cycle_window_count: expectedCycleWindowCount
     };
 
     report.csv = buildReportCsv(report);
@@ -914,6 +949,12 @@ async function createReportFromDatabaseCycle(options = {}) {
   });
 
   const rows = await getLogsForRange(range, deviceId);
+  const expectedCycleWindowCount = await countLogsForCycleWindow({
+    plannedOn,
+    plannedOff,
+    deviceId
+  });
+
   const summary = buildReportSummary(rows, {
     ...baseCycle,
     cycle_date: selectedCycleDate,
@@ -928,7 +969,8 @@ async function createReportFromDatabaseCycle(options = {}) {
     anchor: null,
     range,
     summary,
-    rows
+    rows,
+    expected_cycle_window_count: expectedCycleWindowCount
   };
 
   report.csv = buildReportCsv(report);
@@ -1472,6 +1514,7 @@ app.get("/api/reports/preview", async (req, res) => {
       summary: report.summary,
       range: report.range,
       rows_count: report.rows.length,
+      expected_cycle_window_count: report.expected_cycle_window_count,
       file_name: report.fileName
     });
   } catch (error) {
@@ -1520,6 +1563,7 @@ app.post("/api/reports/send-now", async (req, res) => {
       summary: result.report.summary,
       range: result.report.range,
       rows_count: result.report.rows.length,
+      expected_cycle_window_count: result.report.expected_cycle_window_count,
       file_name: result.report.fileName
     });
   } catch (error) {
