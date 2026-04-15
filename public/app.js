@@ -7,6 +7,7 @@ let currentDeviceStatus = null;
 let currentCycle = null;
 let mapInstance = null;
 let markerInstance = null;
+let selectedReportCycleKey = null;
 
 navButtons.forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -53,6 +54,37 @@ function formatSecondsToReadable(seconds) {
   return `${s} s`;
 }
 
+function formatLuxValue(value) {
+  if (value === null || value === undefined || value === "" || Number.isNaN(Number(value))) {
+    return "—";
+  }
+
+  return `${Number(value).toFixed(2)} lx`;
+}
+
+function parseDateTime(value) {
+  if (typeof value !== "string") return null;
+
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+  if (!match) return null;
+
+  const [, y, mo, d, h, mi, s] = match;
+  const parsed = new Date(
+    Number(y),
+    Number(mo) - 1,
+    Number(d),
+    Number(h),
+    Number(mi),
+    Number(s)
+  );
+
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function addHours(date, hours) {
+  return new Date(date.getTime() + hours * 60 * 60 * 1000);
+}
+
 function getLatestPlannedValue(fieldName) {
   if (!Array.isArray(allData) || !allData.length) return null;
 
@@ -85,11 +117,7 @@ function getResolvedPlannedOff() {
 }
 
 function getResolvedLiveTimestamp(latest) {
-  return (
-    currentDeviceStatus?.timestamp_real ||
-    latest?.timestamp_real ||
-    null
-  );
+  return currentDeviceStatus?.timestamp_real || latest?.timestamp_real || null;
 }
 
 function mapWindowStatus(rawStatus) {
@@ -107,6 +135,240 @@ function mapWindowStatus(rawStatus) {
     default:
       return rawStatus;
   }
+}
+
+function getCycleKeyFromRow(row) {
+  if (!row?.planned_on || !row?.planned_off) return null;
+  return `${row.planned_on}|${row.planned_off}`;
+}
+
+function buildCycleMapFromData() {
+  const cycleMap = new Map();
+
+  allData.forEach((row) => {
+    const cycleKey = getCycleKeyFromRow(row);
+    if (!cycleKey) return;
+
+    if (!cycleMap.has(cycleKey)) {
+      cycleMap.set(cycleKey, {
+        key: cycleKey,
+        planned_on: row.planned_on,
+        planned_off: row.planned_off,
+        rows: []
+      });
+    }
+
+    cycleMap.get(cycleKey).rows.push(row);
+  });
+
+  const cycles = Array.from(cycleMap.values());
+
+  cycles.sort((a, b) => {
+    const dateA = parseDateTime(a.planned_on);
+    const dateB = parseDateTime(b.planned_on);
+
+    if (dateA && dateB) {
+      return dateB.getTime() - dateA.getTime();
+    }
+
+    return String(b.planned_on).localeCompare(String(a.planned_on));
+  });
+
+  return cycles;
+}
+
+function getSelectedReportCycle() {
+  const cycles = buildCycleMapFromData();
+  if (!cycles.length) return null;
+
+  if (selectedReportCycleKey) {
+    const selected = cycles.find((cycle) => cycle.key === selectedReportCycleKey);
+    if (selected) return selected;
+  }
+
+  return cycles[0];
+}
+
+function calculateLuxStats(rows) {
+  const numericLux = rows
+    .map((row) => Number(row.lux))
+    .filter((value) => Number.isFinite(value));
+
+  if (!numericLux.length) {
+    return {
+      min: null,
+      max: null,
+      avg: null,
+      count: 0
+    };
+  }
+
+  const min = Math.min(...numericLux);
+  const max = Math.max(...numericLux);
+  const avg = numericLux.reduce((sum, value) => sum + value, 0) / numericLux.length;
+
+  return {
+    min,
+    max,
+    avg,
+    count: numericLux.length
+  };
+}
+
+function setStatsBlock(prefix, stats) {
+  document.getElementById(`${prefix}Min`).textContent = formatLuxValue(stats.min);
+  document.getElementById(`${prefix}Max`).textContent = formatLuxValue(stats.max);
+  document.getElementById(`${prefix}Avg`).textContent = formatLuxValue(stats.avg);
+  document.getElementById(`${prefix}Count`).textContent = stats.count ?? 0;
+}
+
+function setBarValue(fillId, valueId, value, maxValue) {
+  const fillEl = document.getElementById(fillId);
+  const valueEl = document.getElementById(valueId);
+
+  if (!fillEl || !valueEl) return;
+
+  if (!Number.isFinite(value) || !Number.isFinite(maxValue) || maxValue <= 0) {
+    fillEl.style.width = "0%";
+    valueEl.textContent = "—";
+    return;
+  }
+
+  const width = Math.max(6, Math.round((value / maxValue) * 100));
+  fillEl.style.width = `${Math.min(width, 100)}%`;
+  valueEl.textContent = formatLuxValue(value);
+}
+
+function updateReportCycleSelect() {
+  const select = document.getElementById("reportCycleSelect");
+  const cycles = buildCycleMapFromData();
+
+  const previousValue = selectedReportCycleKey;
+  select.innerHTML = "";
+
+  if (!cycles.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Brak danych";
+    select.appendChild(option);
+    selectedReportCycleKey = null;
+    return;
+  }
+
+  cycles.forEach((cycle) => {
+    const option = document.createElement("option");
+    option.value = cycle.key;
+    option.textContent = `${cycle.planned_on} → ${cycle.planned_off}`;
+    select.appendChild(option);
+  });
+
+  const exists = cycles.some((cycle) => cycle.key === previousValue);
+  selectedReportCycleKey = exists ? previousValue : cycles[0].key;
+  select.value = selectedReportCycleKey;
+}
+
+function updateReportAnalytics() {
+  updateReportCycleSelect();
+
+  const selectedCycle = getSelectedReportCycle();
+
+  if (!selectedCycle) {
+    document.getElementById("reportPlannedOn").textContent = "—";
+    document.getElementById("reportPlannedOff").textContent = "—";
+    document.getElementById("reportActualOn").textContent = "—";
+    document.getElementById("reportActualOff").textContent = "—";
+    document.getElementById("reportDiffOn").textContent = "—";
+    document.getElementById("reportDiffOff").textContent = "—";
+    document.getElementById("reportLuxOn").textContent = "—";
+    document.getElementById("reportLuxOff").textContent = "—";
+
+    setStatsBlock("beforeOn", { min: null, max: null, avg: null, count: 0 });
+    setStatsBlock("afterOn", { min: null, max: null, avg: null, count: 0 });
+    setStatsBlock("beforeOff", { min: null, max: null, avg: null, count: 0 });
+    setStatsBlock("afterOff", { min: null, max: null, avg: null, count: 0 });
+
+    setBarValue("chartBeforeOn", "chartBeforeOnValue", null, null);
+    setBarValue("chartAfterOn", "chartAfterOnValue", null, null);
+    setBarValue("chartBeforeOff", "chartBeforeOffValue", null, null);
+    setBarValue("chartAfterOff", "chartAfterOffValue", null, null);
+    return;
+  }
+
+  const plannedOn = parseDateTime(selectedCycle.planned_on);
+  const plannedOff = parseDateTime(selectedCycle.planned_off);
+
+  const cycleRows = selectedCycle.rows
+    .slice()
+    .sort((a, b) => {
+      const da = parseDateTime(a.timestamp_real);
+      const db = parseDateTime(b.timestamp_real);
+
+      if (da && db) return da.getTime() - db.getTime();
+      return 0;
+    });
+
+  const actualOnRow = cycleRows.find(
+    (row) => row.type === "zmiana_on" && row.planned_on === selectedCycle.planned_on
+  ) || cycleRows.find((row) => row.type === "zmiana_on");
+
+  const actualOffRow = cycleRows.find(
+    (row) => row.type === "zmiana_off" && row.planned_off === selectedCycle.planned_off
+  ) || cycleRows.find((row) => row.type === "zmiana_off");
+
+  document.getElementById("reportPlannedOn").textContent = formatValue(selectedCycle.planned_on);
+  document.getElementById("reportPlannedOff").textContent = formatValue(selectedCycle.planned_off);
+  document.getElementById("reportActualOn").textContent = formatValue(actualOnRow?.timestamp_real);
+  document.getElementById("reportActualOff").textContent = formatValue(actualOffRow?.timestamp_real);
+  document.getElementById("reportDiffOn").textContent = formatSecondsToReadable(actualOnRow?.difference_s);
+  document.getElementById("reportDiffOff").textContent = formatSecondsToReadable(actualOffRow?.difference_s);
+  document.getElementById("reportLuxOn").textContent = formatValue(actualOnRow?.lux);
+  document.getElementById("reportLuxOff").textContent = formatValue(actualOffRow?.lux);
+
+  const beforeOnRows = plannedOn
+    ? cycleRows.filter((row) => {
+        const rowDate = parseDateTime(row.timestamp_real);
+        return row.type === "pomiar" && rowDate && rowDate >= addHours(plannedOn, -1) && rowDate <= plannedOn;
+      })
+    : [];
+
+  const afterOnRows = plannedOn
+    ? cycleRows.filter((row) => {
+        const rowDate = parseDateTime(row.timestamp_real);
+        return row.type === "pomiar" && rowDate && rowDate >= plannedOn && rowDate <= addHours(plannedOn, 1);
+      })
+    : [];
+
+  const beforeOffRows = plannedOff
+    ? cycleRows.filter((row) => {
+        const rowDate = parseDateTime(row.timestamp_real);
+        return row.type === "pomiar" && rowDate && rowDate >= addHours(plannedOff, -1) && rowDate <= plannedOff;
+      })
+    : [];
+
+  const afterOffRows = plannedOff
+    ? cycleRows.filter((row) => {
+        const rowDate = parseDateTime(row.timestamp_real);
+        return row.type === "pomiar" && rowDate && rowDate >= plannedOff && rowDate <= addHours(plannedOff, 1);
+      })
+    : [];
+
+  const beforeOnStats = calculateLuxStats(beforeOnRows);
+  const afterOnStats = calculateLuxStats(afterOnRows);
+  const beforeOffStats = calculateLuxStats(beforeOffRows);
+  const afterOffStats = calculateLuxStats(afterOffRows);
+
+  setStatsBlock("beforeOn", beforeOnStats);
+  setStatsBlock("afterOn", afterOnStats);
+  setStatsBlock("beforeOff", beforeOffStats);
+  setStatsBlock("afterOff", afterOffStats);
+
+  const maxOnAvg = Math.max(beforeOnStats.avg || 0, afterOnStats.avg || 0);
+  const maxOffAvg = Math.max(beforeOffStats.avg || 0, afterOffStats.avg || 0);
+
+  setBarValue("chartBeforeOn", "chartBeforeOnValue", beforeOnStats.avg, maxOnAvg);
+  setBarValue("chartAfterOn", "chartAfterOnValue", afterOnStats.avg, maxOnAvg);
+  setBarValue("chartBeforeOff", "chartBeforeOffValue", beforeOffStats.avg, maxOffAvg);
+  setBarValue("chartAfterOff", "chartAfterOffValue", afterOffStats.avg, maxOffAvg);
 }
 
 async function fetchJson(url) {
@@ -203,30 +465,6 @@ function updateDashboard(latest, stats, alarms) {
 
   document.getElementById("diffOff").textContent =
     formatSecondsToReadable(currentCycle?.diff_off_s);
-
-  document.getElementById("reportPlannedOn").textContent =
-    formatValue(resolvedPlannedOn);
-
-  document.getElementById("reportPlannedOff").textContent =
-    formatValue(resolvedPlannedOff);
-
-  document.getElementById("reportActualOn").textContent =
-    formatValue(currentCycle?.actual_on);
-
-  document.getElementById("reportActualOff").textContent =
-    formatValue(currentCycle?.actual_off);
-
-  document.getElementById("reportDiffOn").textContent =
-    formatSecondsToReadable(currentCycle?.diff_on_s);
-
-  document.getElementById("reportDiffOff").textContent =
-    formatSecondsToReadable(currentCycle?.diff_off_s);
-
-  document.getElementById("reportLuxOn").textContent =
-    formatValue(currentCycle?.lux_on);
-
-  document.getElementById("reportLuxOff").textContent =
-    formatValue(currentCycle?.lux_off);
 
   document.getElementById("statTotal").textContent = stats?.total ?? 0;
   document.getElementById("statPomiar").textContent = stats?.pomiar ?? 0;
@@ -407,6 +645,7 @@ async function loadData() {
     updateDashboard(latest, stats, alarms);
     renderTable();
     updateMapPanel();
+    updateReportAnalytics();
   } catch (error) {
     console.error("Błąd loadData:", error);
   }
@@ -432,6 +671,11 @@ function updateRealtimeClock() {
 
 document.getElementById("typeFilter").addEventListener("change", renderTable);
 document.getElementById("onlyAlarms").addEventListener("change", renderTable);
+
+document.getElementById("reportCycleSelect").addEventListener("change", (event) => {
+  selectedReportCycleKey = event.target.value || null;
+  updateReportAnalytics();
+});
 
 document.getElementById("checkBtn").addEventListener("click", async () => {
   try {
