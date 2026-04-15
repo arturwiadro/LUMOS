@@ -144,9 +144,6 @@ function updateDashboard(latest, stats, alarms) {
     latest?.device_id ||
     "SSO-1";
 
-  document.getElementById("lastTimestamp").textContent =
-    formatValue(resolvedTimestamp);
-
   document.getElementById("liveState").textContent =
     formatValue(currentDeviceStatus?.state ?? latest?.state);
 
