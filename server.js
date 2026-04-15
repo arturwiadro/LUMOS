@@ -46,7 +46,6 @@ function deriveCycleDateFromPlannedOn(plannedOn) {
   if (isFullDateTime(plannedOn)) {
     return plannedOn.slice(0, 10);
   }
-
   return null;
 }
 
@@ -215,27 +214,14 @@ function shouldApplyEntryToCurrentCycle(entry) {
   const entryCycleId = getCycleIdentity(entry.planned_on, entry.planned_off);
   const currentCycleId = getCycleIdentity(currentCycle.planned_on, currentCycle.planned_off);
 
-  if (!currentCycleId) {
-    return true;
-  }
-
-  if (!entryCycleId) {
-    return true;
-  }
-
-  if (entryCycleId === currentCycleId) {
-    return true;
-  }
+  if (!currentCycleId) return true;
+  if (!entryCycleId) return true;
+  if (entryCycleId === currentCycleId) return true;
 
   const order = compareCycleOrder(entry.planned_on, currentCycle.planned_on);
 
-  if (order > 0) {
-    return true;
-  }
-
-  if (order < 0) {
-    return false;
-  }
+  if (order > 0) return true;
+  if (order < 0) return false;
 
   return true;
 }
@@ -486,10 +472,7 @@ function updateCurrentCycleFromEntry(entry) {
   if (!isRelevantType) return;
 
   const shouldApply = shouldApplyEntryToCurrentCycle(entry);
-
-  if (!shouldApply) {
-    return;
-  }
+  if (!shouldApply) return;
 
   const entryCycleId = getCycleIdentity(entry.planned_on, entry.planned_off);
   const currentCycleId = getCycleIdentity(currentCycle.planned_on, currentCycle.planned_off);
