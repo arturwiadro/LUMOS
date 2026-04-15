@@ -183,6 +183,86 @@ function normalizeWindowStatus(rawValue) {
   return rawValue;
 }
 
+function getCycleIdentity(plannedOn, plannedOff) {
+  const hasOn = typeof plannedOn === "string" && plannedOn.trim() !== "";
+  const hasOff = typeof plannedOff === "string" && plannedOff.trim() !== "";
+
+  if (!hasOn && !hasOff) return null;
+
+  return `${plannedOn || ""}|${plannedOff || ""}`;
+}
+
+function compareCycleOrder(plannedOnA, plannedOnB) {
+  const a = parseTimestampString(plannedOnA);
+  const b = parseTimestampString(plannedOnB);
+
+  if (a && b) {
+    if (a.getTime() < b.getTime()) return -1;
+    if (a.getTime() > b.getTime()) return 1;
+    return 0;
+  }
+
+  if (plannedOnA && plannedOnB) {
+    if (plannedOnA < plannedOnB) return -1;
+    if (plannedOnA > plannedOnB) return 1;
+    return 0;
+  }
+
+  return 0;
+}
+
+function shouldApplyEntryToCurrentCycle(entry) {
+  const entryCycleId = getCycleIdentity(entry.planned_on, entry.planned_off);
+  const currentCycleId = getCycleIdentity(currentCycle.planned_on, currentCycle.planned_off);
+
+  if (!currentCycleId) {
+    return true;
+  }
+
+  if (!entryCycleId) {
+    return true;
+  }
+
+  if (entryCycleId === currentCycleId) {
+    return true;
+  }
+
+  const order = compareCycleOrder(entry.planned_on, currentCycle.planned_on);
+
+  if (order > 0) {
+    return true;
+  }
+
+  if (order < 0) {
+    return false;
+  }
+
+  return true;
+}
+
+function overwriteCurrentCycleFromEntryBase(entry) {
+  currentCycle = {
+    device_id: entry.device_id || deviceStatus.device_id || "szafa_01",
+    cycle_date:
+      deriveCycleDateFromPlannedOn(entry.planned_on) ||
+      extractCycleDate(entry.timestamp_real) ||
+      null,
+    planned_on: entry.planned_on || null,
+    planned_off: entry.planned_off || null,
+    actual_on: null,
+    actual_off: null,
+    lux_on: null,
+    lux_off: null,
+    diff_on_s: null,
+    diff_off_s: null,
+    alarm_on: false,
+    alarm_off: false,
+    on_finalized: false,
+    off_finalized: false,
+    updated_at: new Date().toISOString()
+  };
+}
+
 function buildMailText(report) {
   const summary = report.summary;
 
@@ -405,13 +485,28 @@ function updateCurrentCycleFromEntry(entry) {
 
   if (!isRelevantType) return;
 
+  const shouldApply = shouldApplyEntryToCurrentCycle(entry);
+
+  if (!shouldApply) {
+    return;
+  }
+
+  const entryCycleId = getCycleIdentity(entry.planned_on, entry.planned_off);
+  const currentCycleId = getCycleIdentity(currentCycle.planned_on, currentCycle.planned_off);
+
+  if (!currentCycleId || (entryCycleId && entryCycleId !== currentCycleId)) {
+    overwriteCurrentCycleFromEntryBase(entry);
+  }
+
   if (entry.device_id) {
     currentCycle.device_id = entry.device_id;
   }
 
   if (entry.planned_on) {
     currentCycle.planned_on = entry.planned_on;
-    currentCycle.cycle_date = deriveCycleDateFromPlannedOn(entry.planned_on) || currentCycle.cycle_date;
+    currentCycle.cycle_date =
+      deriveCycleDateFromPlannedOn(entry.planned_on) ||
+      currentCycle.cycle_date;
   }
 
   if (entry.planned_off) {
@@ -565,23 +660,6 @@ async function getLogsForRange(range, deviceId) {
 
   const result = await pool.query(query, params);
   return result.rows;
-}
-
-function getTypePriority(type) {
-  switch (type) {
-    case "zmiana_on":
-      return 1;
-    case "zmiana_off":
-      return 2;
-    case "alarm_brak_zalaczenia":
-      return 3;
-    case "alarm_brak_wylaczenia":
-      return 4;
-    case "pomiar":
-      return 5;
-    default:
-      return 99;
-  }
 }
 
 function pickBestCycleEvent(rows, targetType, plannedFieldName, plannedValue) {
