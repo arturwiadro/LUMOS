@@ -5,6 +5,9 @@ const { Pool } = require("pg");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const WINDOW_BEFORE_MIN = 60;
+const WINDOW_AFTER_MIN = 60;
+
 app.use(express.json({ limit: "10mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -98,32 +101,106 @@ function addHours(date, hours) {
   return new Date(date.getTime() + hours * 60 * 60 * 1000);
 }
 
+function addMinutes(date, minutes) {
+  return new Date(date.getTime() + minutes * 60 * 1000);
+}
+
+function getMinutesOfDay(date) {
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+function isWithinWrappedWindow(nowMinutes, eventMinutes, beforeMinutes, afterMinutes) {
+  const start = eventMinutes - beforeMinutes;
+  const end = eventMinutes + afterMinutes;
+
+  if (start >= 0 && end < 1440) {
+    return nowMinutes >= start && nowMinutes <= end;
+  }
+
+  if (start < 0) {
+    return nowMinutes >= 1440 + start || nowMinutes <= end;
+  }
+
+  if (end >= 1440) {
+    return nowMinutes >= start || nowMinutes <= end - 1440;
+  }
+
+  return false;
+}
+
+function calculateWindowStatusFromPlan(plannedOn, plannedOff, nowString = formatWarsawDateTime()) {
+  const now = parseTimestampString(nowString);
+  if (!now) return "unknown";
+
+  const parsedPlannedOn = parseTimestampString(plannedOn);
+  const parsedPlannedOff = parseTimestampString(plannedOff);
+
+  if (parsedPlannedOn && parsedPlannedOff) {
+    const inOnWindow =
+      now >= addMinutes(parsedPlannedOn, -WINDOW_BEFORE_MIN) &&
+      now <= addMinutes(parsedPlannedOn, WINDOW_AFTER_MIN);
+
+    const inOffWindow =
+      now >= addMinutes(parsedPlannedOff, -WINDOW_BEFORE_MIN) &&
+      now <= addMinutes(parsedPlannedOff, WINDOW_AFTER_MIN);
+
+    return inOnWindow || inOffWindow ? "okno_pomiarowe" : "poza_oknem";
+  }
+
+  if (isTimeOnly(plannedOn) && isTimeOnly(plannedOff)) {
+    const nowMin = getMinutesOfDay(now);
+    const [onHour, onMinute] = plannedOn.split(":").map(Number);
+    const [offHour, offMinute] = plannedOff.split(":").map(Number);
+    const onMin = onHour * 60 + onMinute;
+    const offMin = offHour * 60 + offMinute;
+
+    const inOnWindow = isWithinWrappedWindow(nowMin, onMin, WINDOW_BEFORE_MIN, WINDOW_AFTER_MIN);
+    const inOffWindow = isWithinWrappedWindow(nowMin, offMin, WINDOW_BEFORE_MIN, WINDOW_AFTER_MIN);
+
+    return inOnWindow || inOffWindow ? "okno_pomiarowe" : "poza_oknem";
+  }
+
+  return "unknown";
+}
+
+function normalizeWindowStatus(rawValue) {
+  if (rawValue === "okno_pomiarowe" || rawValue === "poza_oknem") {
+    return rawValue;
+  }
+
+  if (!rawValue || rawValue === "unknown") {
+    return "unknown";
+  }
+
+  return rawValue;
+}
+
 function buildMailText(report) {
   const summary = report.summary;
 
   return [
-    `Raport LUMOS / SSO`,
-    ``,
+    "Raport LUMOS / SSO",
+    "",
     `Urządzenie: ${summary.device_id || "-"}`,
     `Data cyklu: ${summary.cycle_date || "-"}`,
-    ``,
+    "",
     `Planowane załączenie: ${summary.planned_on || "-"}`,
     `Fizyczne załączenie: ${summary.actual_on || "-"}`,
     `Różnica ON [s]: ${summary.diff_on_s ?? "-"}`,
     `Lux przy załączeniu: ${summary.lux_on ?? "-"}`,
-    ``,
+    "",
     `Planowane wyłączenie: ${summary.planned_off || "-"}`,
     `Fizyczne wyłączenie: ${summary.actual_off || "-"}`,
     `Różnica OFF [s]: ${summary.diff_off_s ?? "-"}`,
     `Lux przy wyłączeniu: ${summary.lux_off ?? "-"}`,
-    ``,
+    "",
     `Alarm brak załączenia: ${summary.alarm_on ? "TAK" : "NIE"}`,
     `Alarm brak wyłączenia: ${summary.alarm_off ? "TAK" : "NIE"}`,
-    ``,
+    "",
     `Liczba rekordów w raporcie: ${report.rows.length}`,
     `Zakres danych: ${report.range.start} -> ${report.range.end}`,
-    ``,
-    `W załączniku znajduje się plik CSV do porównania z danymi SSO.`
+    "",
+    "W załączniku znajduje się plik CSV do porównania z danymi SSO."
   ].join("\n");
 }
 
@@ -208,6 +285,37 @@ let currentCycle = {
 
 let lastAutoReportKey = null;
 
+function refreshDeviceShadowDerivedFields() {
+  if (!deviceStatus.device_id) {
+    deviceStatus.device_id = currentCycle.device_id || "szafa_01";
+  }
+
+  if (!deviceStatus.mode) {
+    deviceStatus.mode = config.mode || "AUTO";
+  }
+
+  if (!deviceStatus.planned_on) {
+    deviceStatus.planned_on = currentCycle.planned_on || null;
+  }
+
+  if (!deviceStatus.planned_off) {
+    deviceStatus.planned_off = currentCycle.planned_off || null;
+  }
+
+  const normalizedWindowStatus = normalizeWindowStatus(deviceStatus.window_status);
+
+  if (normalizedWindowStatus === "unknown") {
+    deviceStatus.window_status = calculateWindowStatusFromPlan(
+      deviceStatus.planned_on,
+      deviceStatus.planned_off
+    );
+  } else {
+    deviceStatus.window_status = normalizedWindowStatus;
+  }
+
+  deviceStatus.updated_at = new Date().toISOString();
+}
+
 function resetCurrentCycle() {
   currentCycle = {
     device_id: deviceStatus.device_id || "szafa_01",
@@ -239,7 +347,7 @@ function applyConfigToDeviceShadow() {
   }
 
   currentCycle.updated_at = new Date().toISOString();
-  deviceStatus.updated_at = new Date().toISOString();
+  refreshDeviceShadowDerivedFields();
 }
 
 function finalizeCycleParts() {
@@ -275,6 +383,8 @@ function finalizeCycleParts() {
   if (changed) {
     currentCycle.updated_at = new Date().toISOString();
   }
+
+  refreshDeviceShadowDerivedFields();
 }
 
 function updateCurrentCycleFromEntry(entry) {
@@ -289,6 +399,10 @@ function updateCurrentCycleFromEntry(entry) {
   const cycleDate = extractCycleDate(entry.timestamp_real);
   if (!currentCycle.cycle_date && cycleDate) {
     currentCycle.cycle_date = cycleDate;
+  }
+
+  if (entry.device_id) {
+    currentCycle.device_id = entry.device_id;
   }
 
   if (entry.planned_on) currentCycle.planned_on = entry.planned_on;
@@ -315,6 +429,7 @@ function updateCurrentCycleFromEntry(entry) {
   }
 
   currentCycle.updated_at = new Date().toISOString();
+  refreshDeviceShadowDerivedFields();
 }
 
 async function initDatabase() {
@@ -429,10 +544,10 @@ async function getLogsForRange(range, deviceId) {
 
   if (deviceId) {
     params.push(deviceId);
-    query += ` AND device_id = $3 `;
+    query += " AND device_id = $3 ";
   }
 
-  query += ` ORDER BY timestamp_real ASC, id ASC `;
+  query += " ORDER BY timestamp_real ASC, id ASC ";
 
   const result = await pool.query(query, params);
   return result.rows;
@@ -809,6 +924,14 @@ app.post("/api/data", async (req, res) => {
     );
 
     updateCurrentCycleFromEntry(entry);
+
+    if (entry.device_id) deviceStatus.device_id = entry.device_id;
+    if (entry.planned_on) deviceStatus.planned_on = entry.planned_on;
+    if (entry.planned_off) deviceStatus.planned_off = entry.planned_off;
+    if (entry.timestamp_real) deviceStatus.timestamp_real = entry.timestamp_real;
+    if (entry.state !== undefined) deviceStatus.state = entry.state;
+    if (entry.lux !== undefined) deviceStatus.lux = entry.lux;
+
     finalizeCycleParts();
 
     res.json({ status: "ok" });
@@ -828,12 +951,12 @@ app.post("/api/device-status", (req, res) => {
   if (req.body.planned_on) currentCycle.planned_on = req.body.planned_on;
   if (req.body.planned_off) currentCycle.planned_off = req.body.planned_off;
   if (req.body.device_id) currentCycle.device_id = req.body.device_id;
+
   if (!currentCycle.cycle_date && req.body.timestamp_real) {
     currentCycle.cycle_date = extractCycleDate(req.body.timestamp_real);
   }
 
   finalizeCycleParts();
-
   currentCycle.updated_at = new Date().toISOString();
 
   res.json({
@@ -854,6 +977,8 @@ app.get("/api/current-cycle", (req, res) => {
 
 app.post("/api/current-cycle/reset", (req, res) => {
   resetCurrentCycle();
+  applyConfigToDeviceShadow();
+
   res.json({
     status: "ok",
     message: "Bieżący cykl został zresetowany.",
@@ -944,14 +1069,14 @@ app.get("/api/alarms", async (req, res) => {
 
 app.get("/api/stats", async (req, res) => {
   try {
-    const totalResult = await pool.query(`SELECT COUNT(*)::int AS count FROM lighting_logs`);
-    const pomiarResult = await pool.query(`SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'pomiar'`);
-    const onResult = await pool.query(`SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'zmiana_on'`);
-    const offResult = await pool.query(`SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'zmiana_off'`);
-    const pozaResult = await pool.query(`SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'zmiana_poza_oknem'`);
-    const alarmOnResult = await pool.query(`SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'alarm_brak_zalaczenia'`);
-    const alarmOffResult = await pool.query(`SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'alarm_brak_wylaczenia'`);
-    const testResult = await pool.query(`SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'test_manual'`);
+    const totalResult = await pool.query("SELECT COUNT(*)::int AS count FROM lighting_logs");
+    const pomiarResult = await pool.query("SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'pomiar'");
+    const onResult = await pool.query("SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'zmiana_on'");
+    const offResult = await pool.query("SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'zmiana_off'");
+    const pozaResult = await pool.query("SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'zmiana_poza_oknem'");
+    const alarmOnResult = await pool.query("SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'alarm_brak_zalaczenia'");
+    const alarmOffResult = await pool.query("SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'alarm_brak_wylaczenia'");
+    const testResult = await pool.query("SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'test_manual'");
 
     res.json({
       total: totalResult.rows[0].count,
@@ -1065,6 +1190,15 @@ app.post("/api/force", async (req, res) => {
         entry.received_at
       ]
     );
+
+    deviceStatus.device_id = entry.device_id;
+    deviceStatus.timestamp_real = entry.timestamp_real;
+    deviceStatus.state = entry.state;
+    deviceStatus.lux = entry.lux;
+    if (entry.planned_on) deviceStatus.planned_on = entry.planned_on;
+    if (entry.planned_off) deviceStatus.planned_off = entry.planned_off;
+
+    refreshDeviceShadowDerivedFields();
 
     res.json({
       status: "ok",
@@ -1219,7 +1353,7 @@ app.get("/api/reports/history/:id/csv", async (req, res) => {
 
 app.post("/api/admin/clear-data", async (req, res) => {
   try {
-    await pool.query(`TRUNCATE TABLE lighting_logs RESTART IDENTITY`);
+    await pool.query("TRUNCATE TABLE lighting_logs RESTART IDENTITY");
     resetCurrentCycle();
     applyConfigToDeviceShadow();
 
