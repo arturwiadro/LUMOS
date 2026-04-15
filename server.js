@@ -42,6 +42,14 @@ function extractCycleDate(timestampReal) {
   return timestampReal.slice(0, 10);
 }
 
+function deriveCycleDateFromPlannedOn(plannedOn) {
+  if (isFullDateTime(plannedOn)) {
+    return plannedOn.slice(0, 10);
+  }
+
+  return null;
+}
+
 function addDaysToDateString(dateString, days) {
   const [year, month, day] = dateString.split("-").map(Number);
   const date = new Date(Date.UTC(year, month - 1, day));
@@ -344,6 +352,7 @@ function applyConfigToDeviceShadow() {
     deviceStatus.planned_off = config.manual_off;
     currentCycle.planned_on = config.manual_on;
     currentCycle.planned_off = config.manual_off;
+    currentCycle.cycle_date = null;
   }
 
   currentCycle.updated_at = new Date().toISOString();
@@ -396,17 +405,22 @@ function updateCurrentCycleFromEntry(entry) {
 
   if (!isRelevantType) return;
 
-  const cycleDate = extractCycleDate(entry.timestamp_real);
-  if (!currentCycle.cycle_date && cycleDate) {
-    currentCycle.cycle_date = cycleDate;
-  }
-
   if (entry.device_id) {
     currentCycle.device_id = entry.device_id;
   }
 
-  if (entry.planned_on) currentCycle.planned_on = entry.planned_on;
-  if (entry.planned_off) currentCycle.planned_off = entry.planned_off;
+  if (entry.planned_on) {
+    currentCycle.planned_on = entry.planned_on;
+    currentCycle.cycle_date = deriveCycleDateFromPlannedOn(entry.planned_on) || currentCycle.cycle_date;
+  }
+
+  if (entry.planned_off) {
+    currentCycle.planned_off = entry.planned_off;
+  }
+
+  if (!currentCycle.cycle_date && entry.timestamp_real) {
+    currentCycle.cycle_date = extractCycleDate(entry.timestamp_real);
+  }
 
   if (entry.type === "zmiana_on") {
     currentCycle.actual_on = entry.timestamp_real || null;
@@ -553,10 +567,43 @@ async function getLogsForRange(range, deviceId) {
   return result.rows;
 }
 
+function getTypePriority(type) {
+  switch (type) {
+    case "zmiana_on":
+      return 1;
+    case "zmiana_off":
+      return 2;
+    case "alarm_brak_zalaczenia":
+      return 3;
+    case "alarm_brak_wylaczenia":
+      return 4;
+    case "pomiar":
+      return 5;
+    default:
+      return 99;
+  }
+}
+
+function pickBestCycleEvent(rows, targetType, plannedFieldName, plannedValue) {
+  const matchingType = rows.filter((row) => row.type === targetType);
+
+  if (!matchingType.length) return null;
+
+  const exactPlanMatch = matchingType.filter((row) => row[plannedFieldName] === plannedValue);
+  if (exactPlanMatch.length) {
+    return exactPlanMatch[0];
+  }
+
+  return matchingType[0];
+}
+
 function buildReportSummary(rows, baseCycle) {
   const summary = {
     device_id: baseCycle.device_id || deviceStatus.device_id || "szafa_01",
-    cycle_date: baseCycle.cycle_date || formatWarsawDateOnly(),
+    cycle_date:
+      baseCycle.cycle_date ||
+      deriveCycleDateFromPlannedOn(baseCycle.planned_on) ||
+      formatWarsawDateOnly(),
     planned_on: baseCycle.planned_on || null,
     planned_off: baseCycle.planned_off || null,
     actual_on: baseCycle.actual_on || null,
@@ -581,8 +628,12 @@ function buildReportSummary(rows, baseCycle) {
     if (firstWithPlanOff) summary.planned_off = firstWithPlanOff.planned_off;
   }
 
+  if (!summary.cycle_date && summary.planned_on) {
+    summary.cycle_date = deriveCycleDateFromPlannedOn(summary.planned_on);
+  }
+
   if (!summary.actual_on) {
-    const onRow = rows.find((row) => row.type === "zmiana_on");
+    const onRow = pickBestCycleEvent(rows, "zmiana_on", "planned_on", summary.planned_on);
     if (onRow) {
       summary.actual_on = onRow.timestamp_real || null;
       summary.lux_on = onRow.lux ?? null;
@@ -591,7 +642,7 @@ function buildReportSummary(rows, baseCycle) {
   }
 
   if (!summary.actual_off) {
-    const offRow = rows.find((row) => row.type === "zmiana_off");
+    const offRow = pickBestCycleEvent(rows, "zmiana_off", "planned_off", summary.planned_off);
     if (offRow) {
       summary.actual_off = offRow.timestamp_real || null;
       summary.lux_off = offRow.lux ?? null;
@@ -600,11 +651,19 @@ function buildReportSummary(rows, baseCycle) {
   }
 
   if (!summary.alarm_on) {
-    summary.alarm_on = rows.some((row) => row.type === "alarm_brak_zalaczenia");
+    summary.alarm_on = rows.some(
+      (row) =>
+        row.type === "alarm_brak_zalaczenia" &&
+        (!summary.planned_on || row.planned_on === summary.planned_on)
+    );
   }
 
   if (!summary.alarm_off) {
-    summary.alarm_off = rows.some((row) => row.type === "alarm_brak_wylaczenia");
+    summary.alarm_off = rows.some(
+      (row) =>
+        row.type === "alarm_brak_wylaczenia" &&
+        (!summary.planned_off || row.planned_off === summary.planned_off)
+    );
   }
 
   return summary;
@@ -654,18 +713,138 @@ function buildReportCsv(report) {
   return lines.join("\n");
 }
 
-async function createReportFromCurrentCycle(options = {}) {
+async function findReportCycleAnchor({ cycleDate = null, deviceId = null } = {}) {
+  const params = [];
+  let paramIndex = 1;
+
+  let query = `
+    SELECT
+      id,
+      device_id,
+      timestamp_real,
+      type,
+      lux,
+      state,
+      planned_on,
+      planned_off,
+      difference_s,
+      received_at
+    FROM lighting_logs
+    WHERE planned_on IS NOT NULL
+      AND planned_on <> ''
+      AND planned_off IS NOT NULL
+      AND planned_off <> ''
+  `;
+
+  if (deviceId) {
+    query += ` AND device_id = $${paramIndex} `;
+    params.push(deviceId);
+    paramIndex += 1;
+  }
+
+  if (cycleDate) {
+    query += ` AND planned_on LIKE $${paramIndex} `;
+    params.push(`${cycleDate}%`);
+    paramIndex += 1;
+  }
+
+  query += `
+    ORDER BY
+      planned_on DESC,
+      CASE type
+        WHEN 'zmiana_on' THEN 1
+        WHEN 'zmiana_off' THEN 2
+        WHEN 'alarm_brak_zalaczenia' THEN 3
+        WHEN 'alarm_brak_wylaczenia' THEN 4
+        WHEN 'pomiar' THEN 5
+        ELSE 99
+      END ASC,
+      timestamp_real DESC,
+      id DESC
+    LIMIT 1
+  `;
+
+  const result = await pool.query(query, params);
+  if (!result.rows.length) return null;
+
+  const row = result.rows[0];
+
+  return {
+    id: row.id,
+    device_id: row.device_id || deviceId || currentCycle.device_id || deviceStatus.device_id || "szafa_01",
+    planned_on: row.planned_on,
+    planned_off: row.planned_off,
+    cycle_date: deriveCycleDateFromPlannedOn(row.planned_on) || cycleDate || formatWarsawDateOnly(),
+    source_type: row.type,
+    timestamp_real: row.timestamp_real
+  };
+}
+
+async function createReportFromDatabaseCycle(options = {}) {
+  const preferredDeviceId =
+    options.deviceId ||
+    currentCycle.device_id ||
+    deviceStatus.device_id ||
+    "szafa_01";
+
+  const anchor = await findReportCycleAnchor({
+    cycleDate: options.cycleDate || null,
+    deviceId: preferredDeviceId
+  });
+
+  if (anchor) {
+    const range = resolveReportRange({
+      cycleDate: anchor.cycle_date,
+      plannedOn: anchor.planned_on,
+      plannedOff: anchor.planned_off
+    });
+
+    const rows = await getLogsForRange(range, anchor.device_id);
+
+    const summary = buildReportSummary(rows, {
+      device_id: anchor.device_id,
+      cycle_date: anchor.cycle_date,
+      planned_on: anchor.planned_on,
+      planned_off: anchor.planned_off,
+      actual_on: null,
+      actual_off: null,
+      lux_on: null,
+      lux_off: null,
+      diff_on_s: null,
+      diff_off_s: null,
+      alarm_on: false,
+      alarm_off: false,
+      on_finalized: Boolean(currentCycle.on_finalized && currentCycle.planned_on === anchor.planned_on),
+      off_finalized: Boolean(currentCycle.off_finalized && currentCycle.planned_off === anchor.planned_off)
+    });
+
+    const report = {
+      generated_at: new Date().toISOString(),
+      source: "database_cycle_anchor",
+      anchor,
+      range,
+      summary,
+      rows
+    };
+
+    report.csv = buildReportCsv(report);
+    report.fileName = buildReportFileName(summary.cycle_date);
+
+    return report;
+  }
+
   const baseCycle = { ...currentCycle };
 
   const selectedCycleDate =
     options.cycleDate ||
     baseCycle.cycle_date ||
+    deriveCycleDateFromPlannedOn(baseCycle.planned_on) ||
     extractCycleDate(baseCycle.planned_on) ||
     formatWarsawDateOnly();
 
-  const plannedOn = options.plannedOn || baseCycle.planned_on || null;
-  const plannedOff = options.plannedOff || baseCycle.planned_off || null;
-  const deviceId = options.deviceId || baseCycle.device_id || deviceStatus.device_id || "szafa_01";
+  const plannedOn = options.plannedOn || baseCycle.planned_on || deviceStatus.planned_on || null;
+  const plannedOff = options.plannedOff || baseCycle.planned_off || deviceStatus.planned_off || null;
+  const deviceId = preferredDeviceId;
 
   const range = resolveReportRange({
     cycleDate: selectedCycleDate,
@@ -684,6 +863,8 @@ async function createReportFromCurrentCycle(options = {}) {
 
   const report = {
     generated_at: new Date().toISOString(),
+    source: "current_cycle_fallback",
+    anchor: null,
     range,
     summary,
     rows
@@ -833,7 +1014,7 @@ async function generateAndSendReport({
 
   const finalEmail = emailTo || process.env.REPORT_EMAIL_TO;
 
-  const report = await createReportFromCurrentCycle({
+  const report = await createReportFromDatabaseCycle({
     cycleDate
   });
 
@@ -948,7 +1129,13 @@ app.post("/api/device-status", (req, res) => {
     updated_at: new Date().toISOString()
   };
 
-  if (req.body.planned_on) currentCycle.planned_on = req.body.planned_on;
+  if (req.body.planned_on) {
+    currentCycle.planned_on = req.body.planned_on;
+    currentCycle.cycle_date =
+      deriveCycleDateFromPlannedOn(req.body.planned_on) ||
+      currentCycle.cycle_date;
+  }
+
   if (req.body.planned_off) currentCycle.planned_off = req.body.planned_off;
   if (req.body.device_id) currentCycle.device_id = req.body.device_id;
 
@@ -1216,10 +1403,11 @@ app.get("/api/reports/preview", async (req, res) => {
     finalizeCycleParts();
 
     const cycleDate = req.query.cycle_date || null;
-    const report = await createReportFromCurrentCycle({ cycleDate });
+    const report = await createReportFromDatabaseCycle({ cycleDate });
 
     res.json({
       status: "ok",
+      source: report.source,
       summary: report.summary,
       range: report.range,
       rows_count: report.rows.length,
@@ -1236,7 +1424,7 @@ app.get("/api/reports/csv", async (req, res) => {
     finalizeCycleParts();
 
     const cycleDate = req.query.cycle_date || null;
-    const report = await createReportFromCurrentCycle({ cycleDate });
+    const report = await createReportFromDatabaseCycle({ cycleDate });
 
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="${report.fileName}"`);
@@ -1267,6 +1455,7 @@ app.post("/api/reports/send-now", async (req, res) => {
       report_id: result.saved.id,
       created_at: result.saved.created_at,
       provider_message_id: result.providerResponse?.messageId || null,
+      source: result.report.source,
       summary: result.report.summary,
       range: result.report.range,
       rows_count: result.report.rows.length,
