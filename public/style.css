@@ -83,6 +83,11 @@ body {
   margin-bottom: 6px;
 }
 
+.label-inline {
+  color: var(--muted);
+  font-size: 14px;
+}
+
 .status-badge {
   display: inline-block;
   padding: 6px 12px;
@@ -187,10 +192,18 @@ body {
   gap: 16px;
   margin-bottom: 16px;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+.report-filters {
+  margin-top: 16px;
+  margin-bottom: 0;
 }
 
 select,
-input[type="date"] {
+input[type="date"],
+input[type="time"],
+input[type="number"] {
   background: var(--panel-2);
   color: var(--text);
   border: 1px solid var(--border);
@@ -247,6 +260,45 @@ tr.alarm-row {
   background: var(--panel-2);
 }
 
+.chart-panel {
+  display: grid;
+  gap: 18px;
+  padding-top: 8px;
+}
+
+.bar-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 90px;
+  gap: 12px;
+  align-items: center;
+}
+
+.bar-row span {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.bar-track {
+  height: 16px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.05);
+}
+
+.bar-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(56, 214, 107, 0.35), rgba(56, 214, 107, 0.95));
+  transition: width 0.3s ease;
+}
+
+.bar-row strong {
+  text-align: right;
+  font-size: 14px;
+}
+
 .tab {
   display: none;
 }
@@ -255,24 +307,6 @@ tr.alarm-row {
   display: block;
 }
 
-@media (max-width: 1200px) {
-  .cards {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
-  .topbar {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
-  .app {
-    grid-template-columns: 1fr;
-  }
-
-  .sidebar {
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-  }
-}
 .form-group {
   display: flex;
   flex-direction: column;
@@ -311,4 +345,31 @@ tr.alarm-row {
   min-height: 500px;
   border-radius: 12px;
   overflow: hidden;
+}
+
+@media (max-width: 1200px) {
+  .cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .topbar {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .app {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .bar-row {
+    grid-template-columns: 1fr;
+  }
+
+  .bar-row strong {
+    text-align: left;
+  }
 }
