@@ -32,25 +32,88 @@ function formatValue(value, fallback = "—") {
   return value === undefined || value === null || value === "" ? fallback : value;
 }
 
-// 🔥 NOWA FUNKCJA
 function formatSecondsToReadable(seconds) {
-  if (seconds === null || seconds === undefined || isNaN(seconds)) return "—";
+  if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) {
+    return "—";
+  }
 
-  seconds = Math.abs(Number(seconds));
+  const numericSeconds = Math.abs(Number(seconds));
+  const h = Math.floor(numericSeconds / 3600);
+  const m = Math.floor((numericSeconds % 3600) / 60);
+  const s = Math.floor(numericSeconds % 60);
 
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
+  if (h > 0) {
+    return `${h} h ${m.toString().padStart(2, "0")} min ${s.toString().padStart(2, "0")} s`;
+  }
 
-  if (h > 0) return `${h} h ${m.toString().padStart(2, "0")} min ${s.toString().padStart(2, "0")} s`;
-  if (m > 0) return `${m} min ${s.toString().padStart(2, "0")} s`;
+  if (m > 0) {
+    return `${m} min ${s.toString().padStart(2, "0")} s`;
+  }
 
   return `${s} s`;
 }
 
+function getLatestPlannedValue(fieldName) {
+  if (!Array.isArray(allData) || !allData.length) return null;
+
+  for (let i = allData.length - 1; i >= 0; i -= 1) {
+    const value = allData[i]?.[fieldName];
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function getResolvedPlannedOn() {
+  return (
+    currentCycle?.planned_on ||
+    currentDeviceStatus?.planned_on ||
+    getLatestPlannedValue("planned_on") ||
+    null
+  );
+}
+
+function getResolvedPlannedOff() {
+  return (
+    currentCycle?.planned_off ||
+    currentDeviceStatus?.planned_off ||
+    getLatestPlannedValue("planned_off") ||
+    null
+  );
+}
+
+function getResolvedLiveTimestamp(latest) {
+  return (
+    currentDeviceStatus?.timestamp_real ||
+    latest?.timestamp_real ||
+    null
+  );
+}
+
+function mapWindowStatus(rawStatus) {
+  switch (rawStatus) {
+    case "okno_pomiarowe":
+      return "W oknie pomiarowym";
+    case "poza_oknem":
+      return "Poza oknem";
+    case "unknown":
+      return "Brak aktualizacji";
+    case null:
+    case undefined:
+    case "":
+      return "Brak danych";
+    default:
+      return rawStatus;
+  }
+}
+
 async function fetchJson(url) {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`Błąd ${res.status} dla ${url}`);
+  if (!res.ok) {
+    throw new Error(`Błąd ${res.status} dla ${url}`);
+  }
   return res.json();
 }
 
@@ -63,11 +126,18 @@ async function postJson(url, body) {
     body: JSON.stringify(body)
   });
 
-  if (!res.ok) throw new Error(`Błąd ${res.status} dla ${url}`);
+  if (!res.ok) {
+    throw new Error(`Błąd ${res.status} dla ${url}`);
+  }
+
   return res.json();
 }
 
 function updateDashboard(latest, stats, alarms) {
+  const resolvedTimestamp = getResolvedLiveTimestamp(latest);
+  const resolvedPlannedOn = getResolvedPlannedOn();
+  const resolvedPlannedOff = getResolvedPlannedOff();
+
   document.getElementById("deviceId").textContent =
     currentDeviceStatus?.device_id ||
     currentCycle?.device_id ||
@@ -75,20 +145,16 @@ function updateDashboard(latest, stats, alarms) {
     "SSO-1";
 
   document.getElementById("lastTimestamp").textContent =
-    currentDeviceStatus?.timestamp_real ||
-    latest?.timestamp_real ||
-    "—";
+    formatValue(resolvedTimestamp);
 
   document.getElementById("liveState").textContent =
-    currentDeviceStatus?.state ?? latest?.state ?? "—";
+    formatValue(currentDeviceStatus?.state ?? latest?.state);
 
   document.getElementById("liveLux").textContent =
-    currentDeviceStatus?.lux ?? latest?.lux ?? "—";
+    formatValue(currentDeviceStatus?.lux ?? latest?.lux);
 
   document.getElementById("liveTime").textContent =
-    currentDeviceStatus?.timestamp_real ||
-    latest?.timestamp_real ||
-    "—";
+    formatValue(resolvedTimestamp);
 
   const statusEl = document.getElementById("currentStatus");
   statusEl.className = "status-badge";
@@ -101,8 +167,11 @@ function updateDashboard(latest, stats, alarms) {
   } else if (currentState === 1) {
     statusEl.textContent = "ON";
     statusEl.classList.add("status-on");
-  } else {
+  } else if (currentState === 0) {
     statusEl.textContent = "OFF";
+    statusEl.classList.add("status-off");
+  } else {
+    statusEl.textContent = "—";
     statusEl.classList.add("status-off");
   }
 
@@ -112,23 +181,19 @@ function updateDashboard(latest, stats, alarms) {
     "—";
 
   document.getElementById("windowStatus").textContent =
-    currentDeviceStatus?.window_status || "—";
+    mapWindowStatus(currentDeviceStatus?.window_status);
 
   document.getElementById("plannedOn").textContent =
-    currentCycle?.planned_on ||
-    currentDeviceStatus?.planned_on ||
-    "—";
+    formatValue(resolvedPlannedOn);
 
   document.getElementById("plannedOff").textContent =
-    currentCycle?.planned_off ||
-    currentDeviceStatus?.planned_off ||
-    "—";
+    formatValue(resolvedPlannedOff);
 
   document.getElementById("actualOn").textContent =
-    currentCycle?.actual_on || "—";
+    formatValue(currentCycle?.actual_on);
 
   document.getElementById("actualOff").textContent =
-    currentCycle?.actual_off || "—";
+    formatValue(currentCycle?.actual_off);
 
   document.getElementById("luxOn").textContent =
     formatValue(currentCycle?.lux_on);
@@ -136,7 +201,6 @@ function updateDashboard(latest, stats, alarms) {
   document.getElementById("luxOff").textContent =
     formatValue(currentCycle?.lux_off);
 
-  // 🔥 ZMIANA
   document.getElementById("diffOn").textContent =
     formatSecondsToReadable(currentCycle?.diff_on_s);
 
@@ -144,22 +208,17 @@ function updateDashboard(latest, stats, alarms) {
     formatSecondsToReadable(currentCycle?.diff_off_s);
 
   document.getElementById("reportPlannedOn").textContent =
-    currentCycle?.planned_on ||
-    currentDeviceStatus?.planned_on ||
-    "—";
+    formatValue(resolvedPlannedOn);
 
   document.getElementById("reportPlannedOff").textContent =
-    currentCycle?.planned_off ||
-    currentDeviceStatus?.planned_off ||
-    "—";
+    formatValue(resolvedPlannedOff);
 
   document.getElementById("reportActualOn").textContent =
-    currentCycle?.actual_on || "—";
+    formatValue(currentCycle?.actual_on);
 
   document.getElementById("reportActualOff").textContent =
-    currentCycle?.actual_off || "—";
+    formatValue(currentCycle?.actual_off);
 
-  // 🔥 ZMIANA
   document.getElementById("reportDiffOn").textContent =
     formatSecondsToReadable(currentCycle?.diff_on_s);
 
@@ -172,17 +231,17 @@ function updateDashboard(latest, stats, alarms) {
   document.getElementById("reportLuxOff").textContent =
     formatValue(currentCycle?.lux_off);
 
-  document.getElementById("statTotal").textContent = stats.total ?? 0;
-  document.getElementById("statPomiar").textContent = stats.pomiar ?? 0;
-  document.getElementById("statOn").textContent = stats.zmiana_on ?? 0;
-  document.getElementById("statOff").textContent = stats.zmiana_off ?? 0;
-  document.getElementById("statAlarmOn").textContent = stats.alarm_brak_zalaczenia ?? 0;
-  document.getElementById("statAlarmOff").textContent = stats.alarm_brak_wylaczenia ?? 0;
+  document.getElementById("statTotal").textContent = stats?.total ?? 0;
+  document.getElementById("statPomiar").textContent = stats?.pomiar ?? 0;
+  document.getElementById("statOn").textContent = stats?.zmiana_on ?? 0;
+  document.getElementById("statOff").textContent = stats?.zmiana_off ?? 0;
+  document.getElementById("statAlarmOn").textContent = stats?.alarm_brak_zalaczenia ?? 0;
+  document.getElementById("statAlarmOff").textContent = stats?.alarm_brak_wylaczenia ?? 0;
 
   const alarmsList = document.getElementById("alarmsList");
   alarmsList.innerHTML = "";
 
-  if (!alarms.length) {
+  if (!alarms?.length) {
     alarmsList.innerHTML = `<div class="alarm-item">Brak alarmów.</div>`;
   } else {
     alarms
@@ -223,7 +282,10 @@ function renderTable() {
 
   filtered.forEach((row) => {
     const tr = document.createElement("tr");
-    if (isAlarm(row.type)) tr.classList.add("alarm-row");
+
+    if (isAlarm(row.type)) {
+      tr.classList.add("alarm-row");
+    }
 
     tr.innerHTML = `
       <td>${formatValue(row.timestamp_real)}</td>
@@ -248,8 +310,11 @@ function updateMapPanel() {
     latest?.device_id ||
     "szafa_01";
 
-  document.getElementById("mapLat").textContent = currentConfig?.lat ?? "—";
-  document.getElementById("mapLon").textContent = currentConfig?.lon ?? "—";
+  document.getElementById("mapLat").textContent =
+    currentConfig?.lat ?? "—";
+
+  document.getElementById("mapLon").textContent =
+    currentConfig?.lon ?? "—";
 
   document.getElementById("mapMode").textContent =
     currentDeviceStatus?.mode ||
@@ -257,14 +322,10 @@ function updateMapPanel() {
     "—";
 
   document.getElementById("mapState").textContent =
-    currentDeviceStatus?.state ??
-    latest?.state ??
-    "—";
+    formatValue(currentDeviceStatus?.state ?? latest?.state);
 
   document.getElementById("mapLastRead").textContent =
-    currentDeviceStatus?.timestamp_real ||
-    latest?.timestamp_real ||
-    "—";
+    formatValue(getResolvedLiveTimestamp(latest));
 }
 
 function initOrUpdateMap() {
@@ -301,17 +362,17 @@ async function loadConfig() {
   try {
     currentConfig = await fetchJson("/api/config");
 
-    document.getElementById("configLat").value = currentConfig.lat ?? "";
-    document.getElementById("configLon").value = currentConfig.lon ?? "";
-    document.getElementById("configMode").value = currentConfig.mode ?? "AUTO";
-    document.getElementById("manualOn").value = currentConfig.manual_on ?? "19:50";
-    document.getElementById("manualOff").value = currentConfig.manual_off ?? "05:00";
+    document.getElementById("configLat").value = currentConfig?.lat ?? "";
+    document.getElementById("configLon").value = currentConfig?.lon ?? "";
+    document.getElementById("configMode").value = currentConfig?.mode ?? "AUTO";
+    document.getElementById("manualOn").value = currentConfig?.manual_on ?? "19:50";
+    document.getElementById("manualOff").value = currentConfig?.manual_off ?? "05:00";
 
     document.getElementById("locationStatus").textContent =
-      `Aktualna lokalizacja: ${currentConfig.lat}, ${currentConfig.lon}`;
+      `Aktualna lokalizacja: ${currentConfig?.lat}, ${currentConfig?.lon}`;
 
     document.getElementById("modeStatus").textContent =
-      `Aktualny tryb: ${currentConfig.mode}`;
+      `Aktualny tryb: ${currentConfig?.mode}`;
 
     updateMapPanel();
     initOrUpdateMap();
@@ -350,7 +411,25 @@ async function loadData() {
     renderTable();
     updateMapPanel();
   } catch (error) {
-    console.error(error);
+    console.error("Błąd loadData:", error);
+  }
+}
+
+function updateRealtimeClock() {
+  const now = new Date();
+
+  const formatted = now.toLocaleString("pl-PL", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+
+  const clockEl = document.getElementById("realtimeClock");
+  if (clockEl) {
+    clockEl.textContent = formatted;
   }
 }
 
@@ -360,6 +439,7 @@ document.getElementById("onlyAlarms").addEventListener("change", renderTable);
 document.getElementById("checkBtn").addEventListener("click", async () => {
   try {
     const result = await fetchJson("/api/check-status");
+
     if (result.latest) {
       alert(
         `Ostatni znany stan:\nStan: ${result.latest.state}\nLux: ${result.latest.lux}\nCzas: ${result.latest.timestamp_real}`
@@ -368,6 +448,7 @@ document.getElementById("checkBtn").addEventListener("click", async () => {
       alert("Brak danych do sprawdzenia.");
     }
   } catch (error) {
+    console.error(error);
     alert("Nie udało się pobrać statusu.");
   }
 });
@@ -428,6 +509,7 @@ document.getElementById("saveManualPlanBtn").addEventListener("click", async () 
 document.getElementById("forceOnBtn").addEventListener("click", async () => {
   try {
     const result = await postJson("/api/force", { state: 1 });
+
     document.getElementById("forceStatus").textContent =
       `Status testu: dodano rekord ${result.entry.type} / stan 1`;
 
@@ -443,6 +525,7 @@ document.getElementById("forceOnBtn").addEventListener("click", async () => {
 document.getElementById("forceOffBtn").addEventListener("click", async () => {
   try {
     const result = await postJson("/api/force", { state: 0 });
+
     document.getElementById("forceStatus").textContent =
       `Status testu: dodano rekord ${result.entry.type} / stan 0`;
 
@@ -456,6 +539,7 @@ document.getElementById("forceOffBtn").addEventListener("click", async () => {
 });
 
 async function initApp() {
+  updateRealtimeClock();
   await loadConfig();
   await loadDeviceStatus();
   await loadCurrentCycle();
@@ -464,22 +548,12 @@ async function initApp() {
 
 initApp();
 
-// 🔥 RELOAD DANYCH (co 5s)
 setInterval(async () => {
   await loadDeviceStatus();
   await loadCurrentCycle();
   await loadData();
 }, 5000);
 
-// 🔥 REALTIME ZEGAR (co 1s)
 setInterval(() => {
-  const now = new Date();
-
-  const formatted = now.toLocaleString("pl-PL", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit"
-  });
-
-  document.getElementById("liveTime").textContent = formatted;
+  updateRealtimeClock();
 }, 1000);
