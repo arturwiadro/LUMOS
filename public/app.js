@@ -20,25 +20,33 @@ const HISTORY_PAGE_SIZE = 300;
 
 navButtons.forEach((btn) => {
   btn.addEventListener("click", async () => {
-    navButtons.forEach((b) => b.classList.remove("active"));
-    tabs.forEach((t) => t.classList.remove("active"));
+    try {
+      navButtons.forEach((b) => b.classList.remove("active"));
+      tabs.forEach((t) => t.classList.remove("active"));
 
-    btn.classList.add("active");
-    document.getElementById(btn.dataset.tab).classList.add("active");
+      btn.classList.add("active");
 
-    if (btn.dataset.tab === "mapTab" && mapInstance) {
-      setTimeout(() => {
-        mapInstance.invalidateSize();
-      }, 200);
-    }
+      const targetTab = document.getElementById(btn.dataset.tab);
+      if (targetTab) {
+        targetTab.classList.add("active");
+      }
 
-    if (btn.dataset.tab === "data") {
-      await loadHistory();
-    }
+      if (btn.dataset.tab === "mapTab" && mapInstance) {
+        setTimeout(() => {
+          mapInstance.invalidateSize();
+        }, 200);
+      }
 
-    if (btn.dataset.tab === "report") {
-      await loadReportCycles();
-      await loadSelectedReportCycle();
+      if (btn.dataset.tab === "data") {
+        await loadHistory();
+      }
+
+      if (btn.dataset.tab === "report") {
+        await loadReportCycles();
+        await loadSelectedReportCycle();
+      }
+    } catch (error) {
+      console.error("Błąd przełączania zakładki:", error);
     }
   });
 });
@@ -63,34 +71,11 @@ function formatSecondsToReadable(seconds) {
   const minutes = Math.floor(total / 60);
   const secs = Math.floor(total % 60);
 
-  // mniej niż minuta → tylko sekundy
   if (minutes === 0) {
     return `${sign}${secs} s`;
   }
 
-  // minuty + sekundy
   return `${sign}${minutes} min ${secs.toString().padStart(2, "0")} s`;
-}
-  if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) {
-    return "—";
-  }
-
-  const raw = Number(seconds);
-  const sign = raw < 0 ? "-" : "";
-  const numericSeconds = Math.abs(raw);
-  const h = Math.floor(numericSeconds / 3600);
-  const m = Math.floor((numericSeconds % 3600) / 60);
-  const s = Math.floor(numericSeconds % 60);
-
-  if (h > 0) {
-    return `${sign}${h} h ${m.toString().padStart(2, "0")} min ${s.toString().padStart(2, "0")} s`;
-  }
-
-  if (m > 0) {
-    return `${sign}${m} min ${s.toString().padStart(2, "0")} s`;
-  }
-
-  return `${sign}${s} s`;
 }
 
 function formatLuxValue(value) {
@@ -133,16 +118,8 @@ function buildQuery(params) {
 
 function setText(id, value, fallback = "—") {
   const el = document.getElementById(id);
-  if (el) {
-    el.textContent = formatValue(value, fallback);
-  }
-}
-
-function setHtml(id, html) {
-  const el = document.getElementById(id);
-  if (el) {
-    el.innerHTML = html;
-  }
+  if (!el) return;
+  el.textContent = value === undefined || value === null || value === "" ? fallback : value;
 }
 
 async function fetchJson(url) {
@@ -175,6 +152,10 @@ function getCurrentStatusState() {
   return currentDeviceStatus?.state ?? currentDashboard?.latest?.state ?? null;
 }
 
+function hasActiveAlarm() {
+  return Boolean(currentDashboard?.alarm_status?.has_active_alarm);
+}
+
 function updateTopbar() {
   const latest = currentDashboard?.latest || null;
   const currentState = getCurrentStatusState();
@@ -188,9 +169,11 @@ function updateTopbar() {
   );
 
   const statusEl = document.getElementById("currentStatus");
+  if (!statusEl) return;
+
   statusEl.className = "status-badge";
 
-  if ((currentDashboard?.alarms || []).length && isAlarm(currentDashboard.alarms[0]?.type)) {
+  if (hasActiveAlarm()) {
     statusEl.textContent = "ALARM";
     statusEl.classList.add("status-alarm");
   } else if (currentState === 1) {
@@ -237,6 +220,8 @@ function updateDashboardSection() {
   setText("statAlarmOff", stats.alarm_brak_wylaczenia ?? 0, "0");
 
   const alarmsList = document.getElementById("alarmsList");
+  if (!alarmsList) return;
+
   alarmsList.innerHTML = "";
 
   if (!alarms.length) {
@@ -261,6 +246,8 @@ function updateDashboardSection() {
 
 function renderHistoryTable() {
   const tbody = document.getElementById("dataTableBody");
+  if (!tbody) return;
+
   tbody.innerHTML = "";
 
   currentHistoryRows.forEach((row) => {
@@ -345,8 +332,9 @@ function getCurrentCycleKey() {
 
 function updateReportCycleSelect() {
   const select = document.getElementById("reportCycleSelect");
-  const previousValue = selectedReportCycleKey;
+  if (!select) return;
 
+  const previousValue = selectedReportCycleKey;
   select.innerHTML = "";
 
   if (!currentReportCycles.length) {
@@ -463,44 +451,56 @@ function updateReportSection() {
 }
 
 async function loadConfig() {
-  currentConfig = await fetchJson("/api/config");
+  try {
+    currentConfig = await fetchJson("/api/config");
 
-  document.getElementById("configLat").value = currentConfig?.lat ?? "";
-  document.getElementById("configLon").value = currentConfig?.lon ?? "";
-  document.getElementById("configMode").value = currentConfig?.mode ?? "AUTO";
-  document.getElementById("manualOn").value = currentConfig?.manual_on ?? "19:50";
-  document.getElementById("manualOff").value = currentConfig?.manual_off ?? "05:00";
+    const configLat = document.getElementById("configLat");
+    const configLon = document.getElementById("configLon");
+    const configMode = document.getElementById("configMode");
+    const manualOn = document.getElementById("manualOn");
+    const manualOff = document.getElementById("manualOff");
 
-  document.getElementById("locationStatus").textContent =
-    `Aktualna lokalizacja: ${currentConfig?.lat}, ${currentConfig?.lon}`;
+    if (configLat) configLat.value = currentConfig?.lat ?? "";
+    if (configLon) configLon.value = currentConfig?.lon ?? "";
+    if (configMode) configMode.value = currentConfig?.mode ?? "AUTO";
+    if (manualOn) manualOn.value = currentConfig?.manual_on ?? "19:50";
+    if (manualOff) manualOff.value = currentConfig?.manual_off ?? "05:00";
 
-  document.getElementById("modeStatus").textContent =
-    `Aktualny tryb: ${currentConfig?.mode}`;
+    setText("locationStatus", `Aktualna lokalizacja: ${currentConfig?.lat}, ${currentConfig?.lon}`);
+    setText("modeStatus", `Aktualny tryb: ${currentConfig?.mode}`);
 
-  updateMapPanel();
-  initOrUpdateMap();
+    updateMapPanel();
+    initOrUpdateMap();
+  } catch (error) {
+    console.error("Błąd loadConfig:", error);
+  }
 }
 
 async function loadDashboard() {
-  currentDashboard = await fetchJson("/api/dashboard");
-  currentDeviceStatus = currentDashboard?.device_status || null;
-  currentCycle = currentDashboard?.current_cycle || null;
+  try {
+    currentDashboard = await fetchJson("/api/dashboard");
+    currentDeviceStatus = currentDashboard?.device_status || null;
+    currentCycle = currentDashboard?.current_cycle || null;
 
-  updateTopbar();
-  updateDashboardSection();
-  updateMapPanel();
+    updateTopbar();
+    updateDashboardSection();
+    updateMapPanel();
+  } catch (error) {
+    console.error("Błąd loadDashboard:", error);
+  }
 }
 
 async function loadHistory() {
   try {
-    const typeFilter = document.getElementById("typeFilter").value;
-    const onlyAlarms = document.getElementById("onlyAlarms").checked;
-    const cycleKey = selectedReportCycleKey || "";
+    const typeFilterEl = document.getElementById("typeFilter");
+    const onlyAlarmsEl = document.getElementById("onlyAlarms");
+
+    const typeFilter = typeFilterEl ? typeFilterEl.value : "all";
+    const onlyAlarms = onlyAlarmsEl ? onlyAlarmsEl.checked : false;
 
     const query = buildQuery({
       type: typeFilter === "all" ? "" : typeFilter,
       only_alarms: onlyAlarms ? "true" : "",
-      cycle_key: cycleKey,
       limit: HISTORY_PAGE_SIZE,
       offset: 0
     });
@@ -510,6 +510,8 @@ async function loadHistory() {
     renderHistoryTable();
   } catch (error) {
     console.error("Błąd loadHistory:", error);
+    currentHistoryRows = [];
+    renderHistoryTable();
   }
 }
 
@@ -599,117 +601,141 @@ function scheduleAdaptiveRefresh() {
   }, nextMs);
 }
 
-document.getElementById("typeFilter").addEventListener("change", async () => {
-  await loadHistory();
-});
+const typeFilterEl = document.getElementById("typeFilter");
+if (typeFilterEl) {
+  typeFilterEl.addEventListener("change", async () => {
+    await loadHistory();
+  });
+}
 
-document.getElementById("onlyAlarms").addEventListener("change", async () => {
-  await loadHistory();
-});
+const onlyAlarmsEl = document.getElementById("onlyAlarms");
+if (onlyAlarmsEl) {
+  onlyAlarmsEl.addEventListener("change", async () => {
+    await loadHistory();
+  });
+}
 
-document.getElementById("reportCycleSelect").addEventListener("change", async (event) => {
-  selectedReportCycleKey = event.target.value || null;
-  await loadSelectedReportCycle();
-  await loadHistory();
-});
+const reportCycleSelectEl = document.getElementById("reportCycleSelect");
+if (reportCycleSelectEl) {
+  reportCycleSelectEl.addEventListener("change", async (event) => {
+    selectedReportCycleKey = event.target.value || null;
+    await loadSelectedReportCycle();
+  });
+}
 
-document.getElementById("checkBtn").addEventListener("click", async () => {
-  try {
-    const result = await fetchJson("/api/check-status");
+const checkBtnEl = document.getElementById("checkBtn");
+if (checkBtnEl) {
+  checkBtnEl.addEventListener("click", async () => {
+    try {
+      const result = await fetchJson("/api/check-status");
 
-    if (result.latest) {
-      alert(
-        `Ostatni znany stan:\nStan: ${result.latest.state}\nLux: ${result.latest.lux}\nCzas: ${result.latest.timestamp_real}`
-      );
-    } else {
-      alert("Brak danych do sprawdzenia.");
+      if (result.latest) {
+        alert(
+          `Ostatni znany stan:\nStan: ${result.latest.state}\nLux: ${result.latest.lux}\nCzas: ${result.latest.timestamp_real}`
+        );
+      } else {
+        alert("Brak danych do sprawdzenia.");
+      }
+    } catch (error) {
+      console.error(error);
+      alert("Nie udało się pobrać statusu.");
     }
-  } catch (error) {
-    console.error(error);
-    alert("Nie udało się pobrać statusu.");
-  }
-});
+  });
+}
 
-document.getElementById("saveLocationBtn").addEventListener("click", async () => {
-  try {
-    const lat = parseFloat(document.getElementById("configLat").value);
-    const lon = parseFloat(document.getElementById("configLon").value);
+const saveLocationBtnEl = document.getElementById("saveLocationBtn");
+if (saveLocationBtnEl) {
+  saveLocationBtnEl.addEventListener("click", async () => {
+    try {
+      const lat = parseFloat(document.getElementById("configLat").value);
+      const lon = parseFloat(document.getElementById("configLon").value);
 
-    await postJson("/api/config", { lat, lon });
-    await loadConfig();
-    await loadDashboard();
+      await postJson("/api/config", { lat, lon });
+      await loadConfig();
+      await loadDashboard();
 
-    alert("Zapisano lokalizację.");
-  } catch (error) {
-    console.error(error);
-    alert("Nie udało się zapisać lokalizacji.");
-  }
-});
+      alert("Zapisano lokalizację.");
+    } catch (error) {
+      console.error(error);
+      alert("Nie udało się zapisać lokalizacji.");
+    }
+  });
+}
 
-document.getElementById("saveModeBtn").addEventListener("click", async () => {
-  try {
-    const mode = document.getElementById("configMode").value;
+const saveModeBtnEl = document.getElementById("saveModeBtn");
+if (saveModeBtnEl) {
+  saveModeBtnEl.addEventListener("click", async () => {
+    try {
+      const mode = document.getElementById("configMode").value;
 
-    await postJson("/api/config", { mode });
-    await loadConfig();
-    await loadDashboard();
+      await postJson("/api/config", { mode });
+      await loadConfig();
+      await loadDashboard();
 
-    alert("Zapisano tryb pracy.");
-  } catch (error) {
-    console.error(error);
-    alert("Nie udało się zapisać trybu.");
-  }
-});
+      alert("Zapisano tryb pracy.");
+    } catch (error) {
+      console.error(error);
+      alert("Nie udało się zapisać trybu.");
+    }
+  });
+}
 
-document.getElementById("saveManualPlanBtn").addEventListener("click", async () => {
-  try {
-    const manual_on = document.getElementById("manualOn").value;
-    const manual_off = document.getElementById("manualOff").value;
+const saveManualPlanBtnEl = document.getElementById("saveManualPlanBtn");
+if (saveManualPlanBtnEl) {
+  saveManualPlanBtnEl.addEventListener("click", async () => {
+    try {
+      const manual_on = document.getElementById("manualOn").value;
+      const manual_off = document.getElementById("manualOff").value;
 
-    await postJson("/api/config", { manual_on, manual_off });
-    await loadConfig();
-    await loadDashboard();
+      await postJson("/api/config", { manual_on, manual_off });
+      await loadConfig();
+      await loadDashboard();
 
-    alert("Zapisano plan ręczny.");
-  } catch (error) {
-    console.error(error);
-    alert("Nie udało się zapisać planu ręcznego.");
-  }
-});
+      alert("Zapisano plan ręczny.");
+    } catch (error) {
+      console.error(error);
+      alert("Nie udało się zapisać planu ręcznego.");
+    }
+  });
+}
 
-document.getElementById("forceOnBtn").addEventListener("click", async () => {
-  try {
-    const result = await postJson("/api/force", { state: 1 });
+const forceOnBtnEl = document.getElementById("forceOnBtn");
+if (forceOnBtnEl) {
+  forceOnBtnEl.addEventListener("click", async () => {
+    try {
+      const result = await postJson("/api/force", { state: 1 });
 
-    document.getElementById("forceStatus").textContent =
-      `Status testu: dodano rekord ${result.entry.type} / stan 1`;
+      setText("forceStatus", `Status testu: dodano rekord ${result.entry.type} / stan 1`);
 
-    await loadDashboard();
-    await loadHistory();
-    await loadReportCycles();
-    await loadSelectedReportCycle();
-  } catch (error) {
-    console.error(error);
-    alert("Nie udało się wymusić ON.");
-  }
-});
+      await loadDashboard();
+      await loadHistory();
+      await loadReportCycles();
+      await loadSelectedReportCycle();
+    } catch (error) {
+      console.error(error);
+      alert("Nie udało się wymusić ON.");
+    }
+  });
+}
 
-document.getElementById("forceOffBtn").addEventListener("click", async () => {
-  try {
-    const result = await postJson("/api/force", { state: 0 });
+const forceOffBtnEl = document.getElementById("forceOffBtn");
+if (forceOffBtnEl) {
+  forceOffBtnEl.addEventListener("click", async () => {
+    try {
+      const result = await postJson("/api/force", { state: 0 });
 
-    document.getElementById("forceStatus").textContent =
-      `Status testu: dodano rekord ${result.entry.type} / stan 0`;
+      setText("forceStatus", `Status testu: dodano rekord ${result.entry.type} / stan 0`);
 
-    await loadDashboard();
-    await loadHistory();
-    await loadReportCycles();
-    await loadSelectedReportCycle();
-  } catch (error) {
-    console.error(error);
-    alert("Nie udało się wymusić OFF.");
-  }
-});
+      await loadDashboard();
+      await loadHistory();
+      await loadReportCycles();
+      await loadSelectedReportCycle();
+    } catch (error) {
+      console.error(error);
+      alert("Nie udało się wymusić OFF.");
+    }
+  });
+}
 
 async function initApp() {
   updateRealtimeClock();
