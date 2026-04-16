@@ -58,6 +58,25 @@ function formatSecondsToReadable(seconds) {
 
   const raw = Number(seconds);
   const sign = raw < 0 ? "-" : "";
+  const total = Math.abs(raw);
+
+  const minutes = Math.floor(total / 60);
+  const secs = Math.floor(total % 60);
+
+  // mniej niż minuta → tylko sekundy
+  if (minutes === 0) {
+    return `${sign}${secs} s`;
+  }
+
+  // minuty + sekundy
+  return `${sign}${minutes} min ${secs.toString().padStart(2, "0")} s`;
+}
+  if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) {
+    return "—";
+  }
+
+  const raw = Number(seconds);
+  const sign = raw < 0 ? "-" : "";
   const numericSeconds = Math.abs(raw);
   const h = Math.floor(numericSeconds / 3600);
   const m = Math.floor((numericSeconds % 3600) / 60);
