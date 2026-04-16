@@ -278,6 +278,8 @@ function overwriteCurrentCycleFromEntryBase(entry) {
     diff_off_s: null,
     alarm_on: false,
     alarm_off: false,
+    active_alarm_on: false,
+    active_alarm_off: false,
     on_finalized: false,
     off_finalized: false,
     updated_at: new Date().toISOString()
@@ -387,6 +389,8 @@ let currentCycle = {
   diff_off_s: null,
   alarm_on: false,
   alarm_off: false,
+  active_alarm_on: false,
+  active_alarm_off: false,
   on_finalized: false,
   off_finalized: false,
   updated_at: null
@@ -451,6 +455,8 @@ function resetCurrentCycle() {
     diff_off_s: null,
     alarm_on: false,
     alarm_off: false,
+    active_alarm_on: false,
+    active_alarm_off: false,
     on_finalized: false,
     off_finalized: false,
     updated_at: new Date().toISOString()
@@ -551,20 +557,24 @@ function updateCurrentCycleFromEntry(entry) {
     currentCycle.actual_on = entry.timestamp_real || null;
     currentCycle.lux_on = entry.lux ?? null;
     currentCycle.diff_on_s = entry.difference_s ?? null;
+    currentCycle.active_alarm_on = false;
   }
 
   if (entry.type === "zmiana_off") {
     currentCycle.actual_off = entry.timestamp_real || null;
     currentCycle.lux_off = entry.lux ?? null;
     currentCycle.diff_off_s = entry.difference_s ?? null;
+    currentCycle.active_alarm_off = false;
   }
 
   if (entry.type === "alarm_brak_zalaczenia") {
     currentCycle.alarm_on = true;
+    currentCycle.active_alarm_on = true;
   }
 
   if (entry.type === "alarm_brak_wylaczenia") {
     currentCycle.alarm_off = true;
+    currentCycle.active_alarm_off = true;
   }
 
   currentCycle.updated_at = new Date().toISOString();
@@ -747,6 +757,8 @@ function buildReportSummary(rows, baseCycle) {
     diff_off_s: baseCycle.diff_off_s ?? null,
     alarm_on: Boolean(baseCycle.alarm_on),
     alarm_off: Boolean(baseCycle.alarm_off),
+    active_alarm_on: Boolean(baseCycle.active_alarm_on),
+    active_alarm_off: Boolean(baseCycle.active_alarm_off),
     on_finalized: Boolean(baseCycle.on_finalized),
     off_finalized: Boolean(baseCycle.off_finalized)
   };
@@ -799,6 +811,14 @@ function buildReportSummary(rows, baseCycle) {
     );
   }
 
+  if (summary.actual_on) {
+    summary.active_alarm_on = false;
+  }
+
+  if (summary.actual_off) {
+    summary.active_alarm_off = false;
+  }
+
   return summary;
 }
 
@@ -819,6 +839,8 @@ function buildReportCsv(report) {
   lines.push(`podsumowanie,lux_off,${csvEscape(summary.lux_off)}`);
   lines.push(`podsumowanie,alarm_on,${csvEscape(summary.alarm_on ? 1 : 0)}`);
   lines.push(`podsumowanie,alarm_off,${csvEscape(summary.alarm_off ? 1 : 0)}`);
+  lines.push(`podsumowanie,active_alarm_on,${csvEscape(summary.active_alarm_on ? 1 : 0)}`);
+  lines.push(`podsumowanie,active_alarm_off,${csvEscape(summary.active_alarm_off ? 1 : 0)}`);
   lines.push(`podsumowanie,on_finalized,${csvEscape(summary.on_finalized ? 1 : 0)}`);
   lines.push(`podsumowanie,off_finalized,${csvEscape(summary.off_finalized ? 1 : 0)}`);
   lines.push(`podsumowanie,range_start,${csvEscape(report.range.start)}`);
@@ -955,6 +977,8 @@ async function createReportFromDatabaseCycle(options = {}) {
       diff_off_s: null,
       alarm_on: false,
       alarm_off: false,
+      active_alarm_on: Boolean(currentCycle.active_alarm_on && currentCycle.planned_on === anchor.planned_on),
+      active_alarm_off: Boolean(currentCycle.active_alarm_off && currentCycle.planned_off === anchor.planned_off),
       on_finalized: Boolean(currentCycle.on_finalized && currentCycle.planned_on === anchor.planned_on),
       off_finalized: Boolean(currentCycle.off_finalized && currentCycle.planned_off === anchor.planned_off)
     });
@@ -1572,6 +1596,8 @@ async function getCycleReportByKey(cycleKey, deviceId = null) {
     diff_off_s: null,
     alarm_on: false,
     alarm_off: false,
+    active_alarm_on: Boolean(currentCycle.active_alarm_on && currentCycle.planned_on === plannedOn),
+    active_alarm_off: Boolean(currentCycle.active_alarm_off && currentCycle.planned_off === plannedOff),
     on_finalized: Boolean(currentCycle.on_finalized && currentCycle.planned_on === plannedOn),
     off_finalized: Boolean(currentCycle.off_finalized && currentCycle.planned_off === plannedOff)
   });
@@ -1588,6 +1614,14 @@ async function getCycleReportByKey(cycleKey, deviceId = null) {
   };
 }
 
+function getCurrentAlarmStatus() {
+  return {
+    active_alarm_on: Boolean(currentCycle.active_alarm_on),
+    active_alarm_off: Boolean(currentCycle.active_alarm_off),
+    has_active_alarm: Boolean(currentCycle.active_alarm_on || currentCycle.active_alarm_off)
+  };
+}
+
 async function buildDashboardPayload(deviceId = null) {
   finalizeCycleParts();
 
@@ -1600,6 +1634,7 @@ async function buildDashboardPayload(deviceId = null) {
   return {
     device_status: deviceStatus,
     current_cycle: currentCycle,
+    alarm_status: getCurrentAlarmStatus(),
     latest,
     stats,
     alarms
