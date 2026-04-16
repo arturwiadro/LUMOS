@@ -1,16 +1,25 @@
 const navButtons = document.querySelectorAll(".nav-btn");
 const tabs = document.querySelectorAll(".tab");
 
-let allData = [];
 let currentConfig = null;
 let currentDeviceStatus = null;
 let currentCycle = null;
+let currentDashboard = null;
+let currentHistoryRows = [];
+let currentReportCycles = [];
+let currentReportDetails = null;
+
 let mapInstance = null;
 let markerInstance = null;
 let selectedReportCycleKey = null;
 
+let refreshTimer = null;
+const FAST_REFRESH_MS = 1000;
+const SLOW_REFRESH_MS = 15000;
+const HISTORY_PAGE_SIZE = 300;
+
 navButtons.forEach((btn) => {
-  btn.addEventListener("click", () => {
+  btn.addEventListener("click", async () => {
     navButtons.forEach((b) => b.classList.remove("active"));
     tabs.forEach((t) => t.classList.remove("active"));
 
@@ -21,6 +30,15 @@ navButtons.forEach((btn) => {
       setTimeout(() => {
         mapInstance.invalidateSize();
       }, 200);
+    }
+
+    if (btn.dataset.tab === "data") {
+      await loadHistory();
+    }
+
+    if (btn.dataset.tab === "report") {
+      await loadReportCycles();
+      await loadSelectedReportCycle();
     }
   });
 });
@@ -38,20 +56,22 @@ function formatSecondsToReadable(seconds) {
     return "—";
   }
 
-  const numericSeconds = Math.abs(Number(seconds));
+  const raw = Number(seconds);
+  const sign = raw < 0 ? "-" : "";
+  const numericSeconds = Math.abs(raw);
   const h = Math.floor(numericSeconds / 3600);
   const m = Math.floor((numericSeconds % 3600) / 60);
   const s = Math.floor(numericSeconds % 60);
 
   if (h > 0) {
-    return `${h} h ${m.toString().padStart(2, "0")} min ${s.toString().padStart(2, "0")} s`;
+    return `${sign}${h} h ${m.toString().padStart(2, "0")} min ${s.toString().padStart(2, "0")} s`;
   }
 
   if (m > 0) {
-    return `${m} min ${s.toString().padStart(2, "0")} s`;
+    return `${sign}${m} min ${s.toString().padStart(2, "0")} s`;
   }
 
-  return `${s} s`;
+  return `${sign}${s} s`;
 }
 
 function formatLuxValue(value) {
@@ -60,64 +80,6 @@ function formatLuxValue(value) {
   }
 
   return `${Number(value).toFixed(2)} lx`;
-}
-
-function parseDateTime(value) {
-  if (typeof value !== "string") return null;
-
-  const match = value.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
-  if (!match) return null;
-
-  const [, y, mo, d, h, mi, s] = match;
-  const parsed = new Date(
-    Number(y),
-    Number(mo) - 1,
-    Number(d),
-    Number(h),
-    Number(mi),
-    Number(s)
-  );
-
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
-
-function addHours(date, hours) {
-  return new Date(date.getTime() + hours * 60 * 60 * 1000);
-}
-
-function getLatestPlannedValue(fieldName) {
-  if (!Array.isArray(allData) || !allData.length) return null;
-
-  for (let i = allData.length - 1; i >= 0; i -= 1) {
-    const value = allData[i]?.[fieldName];
-    if (value !== undefined && value !== null && value !== "") {
-      return value;
-    }
-  }
-
-  return null;
-}
-
-function getResolvedPlannedOn() {
-  return (
-    currentCycle?.planned_on ||
-    currentDeviceStatus?.planned_on ||
-    getLatestPlannedValue("planned_on") ||
-    null
-  );
-}
-
-function getResolvedPlannedOff() {
-  return (
-    currentCycle?.planned_off ||
-    currentDeviceStatus?.planned_off ||
-    getLatestPlannedValue("planned_off") ||
-    null
-  );
-}
-
-function getResolvedLiveTimestamp(latest) {
-  return currentDeviceStatus?.timestamp_real || latest?.timestamp_real || null;
 }
 
 function mapWindowStatus(rawStatus) {
@@ -137,245 +99,40 @@ function mapWindowStatus(rawStatus) {
   }
 }
 
-function getCycleKeyFromRow(row) {
-  if (!row?.planned_on || !row?.planned_off) return null;
-  return `${row.planned_on}|${row.planned_off}`;
-}
+function buildQuery(params) {
+  const search = new URLSearchParams();
 
-function buildCycleMapFromData() {
-  const cycleMap = new Map();
-
-  allData.forEach((row) => {
-    const cycleKey = getCycleKeyFromRow(row);
-    if (!cycleKey) return;
-
-    if (!cycleMap.has(cycleKey)) {
-      cycleMap.set(cycleKey, {
-        key: cycleKey,
-        planned_on: row.planned_on,
-        planned_off: row.planned_off,
-        rows: []
-      });
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      search.set(key, value);
     }
-
-    cycleMap.get(cycleKey).rows.push(row);
   });
 
-  const cycles = Array.from(cycleMap.values());
-
-  cycles.sort((a, b) => {
-    const dateA = parseDateTime(a.planned_on);
-    const dateB = parseDateTime(b.planned_on);
-
-    if (dateA && dateB) {
-      return dateB.getTime() - dateA.getTime();
-    }
-
-    return String(b.planned_on).localeCompare(String(a.planned_on));
-  });
-
-  return cycles;
+  const query = search.toString();
+  return query ? `?${query}` : "";
 }
 
-function getSelectedReportCycle() {
-  const cycles = buildCycleMapFromData();
-  if (!cycles.length) return null;
-
-  if (selectedReportCycleKey) {
-    const selected = cycles.find((cycle) => cycle.key === selectedReportCycleKey);
-    if (selected) return selected;
+function setText(id, value, fallback = "—") {
+  const el = document.getElementById(id);
+  if (el) {
+    el.textContent = formatValue(value, fallback);
   }
-
-  return cycles[0];
 }
 
-function calculateLuxStats(rows) {
-  const numericLux = rows
-    .map((row) => Number(row.lux))
-    .filter((value) => Number.isFinite(value));
-
-  if (!numericLux.length) {
-    return {
-      min: null,
-      max: null,
-      avg: null,
-      count: 0
-    };
+function setHtml(id, html) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.innerHTML = html;
   }
-
-  const min = Math.min(...numericLux);
-  const max = Math.max(...numericLux);
-  const avg = numericLux.reduce((sum, value) => sum + value, 0) / numericLux.length;
-
-  return {
-    min,
-    max,
-    avg,
-    count: numericLux.length
-  };
-}
-
-function setStatsBlock(prefix, stats) {
-  document.getElementById(`${prefix}Min`).textContent = formatLuxValue(stats.min);
-  document.getElementById(`${prefix}Max`).textContent = formatLuxValue(stats.max);
-  document.getElementById(`${prefix}Avg`).textContent = formatLuxValue(stats.avg);
-  document.getElementById(`${prefix}Count`).textContent = stats.count ?? 0;
-}
-
-function setBarValue(fillId, valueId, value, maxValue) {
-  const fillEl = document.getElementById(fillId);
-  const valueEl = document.getElementById(valueId);
-
-  if (!fillEl || !valueEl) return;
-
-  if (!Number.isFinite(value) || !Number.isFinite(maxValue) || maxValue <= 0) {
-    fillEl.style.width = "0%";
-    valueEl.textContent = "—";
-    return;
-  }
-
-  const width = Math.max(6, Math.round((value / maxValue) * 100));
-  fillEl.style.width = `${Math.min(width, 100)}%`;
-  valueEl.textContent = formatLuxValue(value);
-}
-
-function updateReportCycleSelect() {
-  const select = document.getElementById("reportCycleSelect");
-  const cycles = buildCycleMapFromData();
-
-  const previousValue = selectedReportCycleKey;
-  select.innerHTML = "";
-
-  if (!cycles.length) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "Brak danych";
-    select.appendChild(option);
-    selectedReportCycleKey = null;
-    return;
-  }
-
-  cycles.forEach((cycle) => {
-    const option = document.createElement("option");
-    option.value = cycle.key;
-    option.textContent = `${cycle.planned_on} → ${cycle.planned_off}`;
-    select.appendChild(option);
-  });
-
-  const exists = cycles.some((cycle) => cycle.key === previousValue);
-  selectedReportCycleKey = exists ? previousValue : cycles[0].key;
-  select.value = selectedReportCycleKey;
-}
-
-function updateReportAnalytics() {
-  updateReportCycleSelect();
-
-  const selectedCycle = getSelectedReportCycle();
-
-  if (!selectedCycle) {
-    document.getElementById("reportPlannedOn").textContent = "—";
-    document.getElementById("reportPlannedOff").textContent = "—";
-    document.getElementById("reportActualOn").textContent = "—";
-    document.getElementById("reportActualOff").textContent = "—";
-    document.getElementById("reportDiffOn").textContent = "—";
-    document.getElementById("reportDiffOff").textContent = "—";
-    document.getElementById("reportLuxOn").textContent = "—";
-    document.getElementById("reportLuxOff").textContent = "—";
-
-    setStatsBlock("beforeOn", { min: null, max: null, avg: null, count: 0 });
-    setStatsBlock("afterOn", { min: null, max: null, avg: null, count: 0 });
-    setStatsBlock("beforeOff", { min: null, max: null, avg: null, count: 0 });
-    setStatsBlock("afterOff", { min: null, max: null, avg: null, count: 0 });
-
-    setBarValue("chartBeforeOn", "chartBeforeOnValue", null, null);
-    setBarValue("chartAfterOn", "chartAfterOnValue", null, null);
-    setBarValue("chartBeforeOff", "chartBeforeOffValue", null, null);
-    setBarValue("chartAfterOff", "chartAfterOffValue", null, null);
-    return;
-  }
-
-  const plannedOn = parseDateTime(selectedCycle.planned_on);
-  const plannedOff = parseDateTime(selectedCycle.planned_off);
-
-  const cycleRows = selectedCycle.rows
-    .slice()
-    .sort((a, b) => {
-      const da = parseDateTime(a.timestamp_real);
-      const db = parseDateTime(b.timestamp_real);
-
-      if (da && db) return da.getTime() - db.getTime();
-      return 0;
-    });
-
-  const actualOnRow = cycleRows.find(
-    (row) => row.type === "zmiana_on" && row.planned_on === selectedCycle.planned_on
-  ) || cycleRows.find((row) => row.type === "zmiana_on");
-
-  const actualOffRow = cycleRows.find(
-    (row) => row.type === "zmiana_off" && row.planned_off === selectedCycle.planned_off
-  ) || cycleRows.find((row) => row.type === "zmiana_off");
-
-  document.getElementById("reportPlannedOn").textContent = formatValue(selectedCycle.planned_on);
-  document.getElementById("reportPlannedOff").textContent = formatValue(selectedCycle.planned_off);
-  document.getElementById("reportActualOn").textContent = formatValue(actualOnRow?.timestamp_real);
-  document.getElementById("reportActualOff").textContent = formatValue(actualOffRow?.timestamp_real);
-  document.getElementById("reportDiffOn").textContent = formatSecondsToReadable(actualOnRow?.difference_s);
-  document.getElementById("reportDiffOff").textContent = formatSecondsToReadable(actualOffRow?.difference_s);
-  document.getElementById("reportLuxOn").textContent = formatValue(actualOnRow?.lux);
-  document.getElementById("reportLuxOff").textContent = formatValue(actualOffRow?.lux);
-
-  const beforeOnRows = plannedOn
-    ? cycleRows.filter((row) => {
-        const rowDate = parseDateTime(row.timestamp_real);
-        return row.type === "pomiar" && rowDate && rowDate >= addHours(plannedOn, -1) && rowDate <= plannedOn;
-      })
-    : [];
-
-  const afterOnRows = plannedOn
-    ? cycleRows.filter((row) => {
-        const rowDate = parseDateTime(row.timestamp_real);
-        return row.type === "pomiar" && rowDate && rowDate >= plannedOn && rowDate <= addHours(plannedOn, 1);
-      })
-    : [];
-
-  const beforeOffRows = plannedOff
-    ? cycleRows.filter((row) => {
-        const rowDate = parseDateTime(row.timestamp_real);
-        return row.type === "pomiar" && rowDate && rowDate >= addHours(plannedOff, -1) && rowDate <= plannedOff;
-      })
-    : [];
-
-  const afterOffRows = plannedOff
-    ? cycleRows.filter((row) => {
-        const rowDate = parseDateTime(row.timestamp_real);
-        return row.type === "pomiar" && rowDate && rowDate >= plannedOff && rowDate <= addHours(plannedOff, 1);
-      })
-    : [];
-
-  const beforeOnStats = calculateLuxStats(beforeOnRows);
-  const afterOnStats = calculateLuxStats(afterOnRows);
-  const beforeOffStats = calculateLuxStats(beforeOffRows);
-  const afterOffStats = calculateLuxStats(afterOffRows);
-
-  setStatsBlock("beforeOn", beforeOnStats);
-  setStatsBlock("afterOn", afterOnStats);
-  setStatsBlock("beforeOff", beforeOffStats);
-  setStatsBlock("afterOff", afterOffStats);
-
-  const maxOnAvg = Math.max(beforeOnStats.avg || 0, afterOnStats.avg || 0);
-  const maxOffAvg = Math.max(beforeOffStats.avg || 0, afterOffStats.avg || 0);
-
-  setBarValue("chartBeforeOn", "chartBeforeOnValue", beforeOnStats.avg, maxOnAvg);
-  setBarValue("chartAfterOn", "chartAfterOnValue", afterOnStats.avg, maxOnAvg);
-  setBarValue("chartBeforeOff", "chartBeforeOffValue", beforeOffStats.avg, maxOffAvg);
-  setBarValue("chartAfterOff", "chartAfterOffValue", afterOffStats.avg, maxOffAvg);
 }
 
 async function fetchJson(url) {
   const res = await fetch(url);
+
   if (!res.ok) {
     throw new Error(`Błąd ${res.status} dla ${url}`);
   }
+
   return res.json();
 }
 
@@ -395,32 +152,26 @@ async function postJson(url, body) {
   return res.json();
 }
 
-function updateDashboard(latest, stats, alarms) {
-  const resolvedTimestamp = getResolvedLiveTimestamp(latest);
-  const resolvedPlannedOn = getResolvedPlannedOn();
-  const resolvedPlannedOff = getResolvedPlannedOff();
+function getCurrentStatusState() {
+  return currentDeviceStatus?.state ?? currentDashboard?.latest?.state ?? null;
+}
 
-  document.getElementById("deviceId").textContent =
+function updateTopbar() {
+  const latest = currentDashboard?.latest || null;
+  const currentState = getCurrentStatusState();
+
+  setText(
+    "deviceId",
     currentDeviceStatus?.device_id ||
-    currentCycle?.device_id ||
-    latest?.device_id ||
-    "SSO-1";
-
-  document.getElementById("liveState").textContent =
-    formatValue(currentDeviceStatus?.state ?? latest?.state);
-
-  document.getElementById("liveLux").textContent =
-    formatValue(currentDeviceStatus?.lux ?? latest?.lux);
-
-  document.getElementById("liveTime").textContent =
-    formatValue(resolvedTimestamp);
+      currentCycle?.device_id ||
+      latest?.device_id ||
+      "SSO-1"
+  );
 
   const statusEl = document.getElementById("currentStatus");
   statusEl.className = "status-badge";
 
-  const currentState = currentDeviceStatus?.state ?? latest?.state ?? null;
-
-  if (latest && isAlarm(latest.type)) {
+  if ((currentDashboard?.alarms || []).length && isAlarm(currentDashboard.alarms[0]?.type)) {
     statusEl.textContent = "ALARM";
     statusEl.classList.add("status-alarm");
   } else if (currentState === 1) {
@@ -434,88 +185,66 @@ function updateDashboard(latest, stats, alarms) {
     statusEl.classList.add("status-off");
   }
 
-  document.getElementById("workMode").textContent =
-    currentDeviceStatus?.mode ||
-    currentConfig?.mode ||
-    "—";
+  setText("workMode", currentDeviceStatus?.mode || currentConfig?.mode || "—");
+  setText("windowStatus", mapWindowStatus(currentDeviceStatus?.window_status), "Brak danych");
+}
 
-  document.getElementById("windowStatus").textContent =
-    mapWindowStatus(currentDeviceStatus?.window_status);
+function updateDashboardSection() {
+  const latest = currentDashboard?.latest || null;
+  const stats = currentDashboard?.stats || {};
+  const alarms = currentDashboard?.alarms || [];
 
-  document.getElementById("plannedOn").textContent =
-    formatValue(resolvedPlannedOn);
+  setText("plannedOn", currentCycle?.planned_on || currentDeviceStatus?.planned_on);
+  setText("plannedOff", currentCycle?.planned_off || currentDeviceStatus?.planned_off);
 
-  document.getElementById("plannedOff").textContent =
-    formatValue(resolvedPlannedOff);
+  setText("actualOn", currentCycle?.actual_on);
+  setText("actualOff", currentCycle?.actual_off);
 
-  document.getElementById("actualOn").textContent =
-    formatValue(currentCycle?.actual_on);
+  setText("luxOn", formatLuxValue(currentCycle?.lux_on));
+  setText("luxOff", formatLuxValue(currentCycle?.lux_off));
 
-  document.getElementById("actualOff").textContent =
-    formatValue(currentCycle?.actual_off);
+  setText("diffOn", formatSecondsToReadable(currentCycle?.diff_on_s));
+  setText("diffOff", formatSecondsToReadable(currentCycle?.diff_off_s));
 
-  document.getElementById("luxOn").textContent =
-    formatValue(currentCycle?.lux_on);
+  setText("liveState", currentDeviceStatus?.state ?? latest?.state);
+  setText("liveLux", formatLuxValue(currentDeviceStatus?.lux ?? latest?.lux));
+  setText("liveTime", currentDeviceStatus?.timestamp_real || latest?.timestamp_real);
 
-  document.getElementById("luxOff").textContent =
-    formatValue(currentCycle?.lux_off);
-
-  document.getElementById("diffOn").textContent =
-    formatSecondsToReadable(currentCycle?.diff_on_s);
-
-  document.getElementById("diffOff").textContent =
-    formatSecondsToReadable(currentCycle?.diff_off_s);
-
-  document.getElementById("statTotal").textContent = stats?.total ?? 0;
-  document.getElementById("statPomiar").textContent = stats?.pomiar ?? 0;
-  document.getElementById("statOn").textContent = stats?.zmiana_on ?? 0;
-  document.getElementById("statOff").textContent = stats?.zmiana_off ?? 0;
-  document.getElementById("statAlarmOn").textContent = stats?.alarm_brak_zalaczenia ?? 0;
-  document.getElementById("statAlarmOff").textContent = stats?.alarm_brak_wylaczenia ?? 0;
+  setText("statTotal", stats.total ?? 0, "0");
+  setText("statPomiar", stats.pomiar ?? 0, "0");
+  setText("statOn", stats.zmiana_on ?? 0, "0");
+  setText("statOff", stats.zmiana_off ?? 0, "0");
+  setText("statAlarmOn", stats.alarm_brak_zalaczenia ?? 0, "0");
+  setText("statAlarmOff", stats.alarm_brak_wylaczenia ?? 0, "0");
 
   const alarmsList = document.getElementById("alarmsList");
   alarmsList.innerHTML = "";
 
-  if (!alarms?.length) {
+  if (!alarms.length) {
     alarmsList.innerHTML = `<div class="alarm-item">Brak alarmów.</div>`;
-  } else {
-    alarms
-      .slice(-10)
-      .reverse()
-      .forEach((alarm) => {
-        const div = document.createElement("div");
-        div.className = "alarm-item";
-        div.innerHTML = `
-          <div><strong>${formatValue(alarm.type)}</strong></div>
-          <div>Czas: ${formatValue(alarm.timestamp_real)}</div>
-          <div>Plan ON: ${formatValue(alarm.planned_on)}</div>
-          <div>Plan OFF: ${formatValue(alarm.planned_off)}</div>
-          <div>Stan: ${formatValue(alarm.state)}</div>
-          <div>Różnica: ${formatSecondsToReadable(alarm.difference_s)}</div>
-        `;
-        alarmsList.appendChild(div);
-      });
+    return;
   }
+
+  alarms.forEach((alarm) => {
+    const div = document.createElement("div");
+    div.className = "alarm-item";
+    div.innerHTML = `
+      <div><strong>${formatValue(alarm.type)}</strong></div>
+      <div>Czas: ${formatValue(alarm.timestamp_real)}</div>
+      <div>Plan ON: ${formatValue(alarm.planned_on)}</div>
+      <div>Plan OFF: ${formatValue(alarm.planned_off)}</div>
+      <div>Stan: ${formatValue(alarm.state)}</div>
+      <div>Różnica: ${formatSecondsToReadable(alarm.difference_s)}</div>
+    `;
+    alarmsList.appendChild(div);
+  });
 }
 
-function renderTable() {
+function renderHistoryTable() {
   const tbody = document.getElementById("dataTableBody");
-  const typeFilter = document.getElementById("typeFilter").value;
-  const onlyAlarms = document.getElementById("onlyAlarms").checked;
-
-  let filtered = [...allData].reverse();
-
-  if (typeFilter !== "all") {
-    filtered = filtered.filter((item) => item.type === typeFilter);
-  }
-
-  if (onlyAlarms) {
-    filtered = filtered.filter((item) => isAlarm(item.type));
-  }
-
   tbody.innerHTML = "";
 
-  filtered.forEach((row) => {
+  currentHistoryRows.forEach((row) => {
     const tr = document.createElement("tr");
 
     if (isAlarm(row.type)) {
@@ -525,7 +254,7 @@ function renderTable() {
     tr.innerHTML = `
       <td>${formatValue(row.timestamp_real)}</td>
       <td>${formatValue(row.type)}</td>
-      <td>${formatValue(row.lux)}</td>
+      <td>${formatLuxValue(row.lux)}</td>
       <td>${formatValue(row.state)}</td>
       <td>${formatValue(row.planned_on)}</td>
       <td>${formatValue(row.planned_off)}</td>
@@ -534,33 +263,30 @@ function renderTable() {
 
     tbody.appendChild(tr);
   });
+
+  if (!currentHistoryRows.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="7">Brak danych dla wybranych filtrów.</td>`;
+    tbody.appendChild(tr);
+  }
 }
 
 function updateMapPanel() {
-  const latest = allData.length ? allData[allData.length - 1] : null;
+  const latest = currentDashboard?.latest || null;
 
-  document.getElementById("mapDeviceId").textContent =
+  setText(
+    "mapDeviceId",
     currentDeviceStatus?.device_id ||
-    currentCycle?.device_id ||
-    latest?.device_id ||
-    "szafa_01";
+      currentCycle?.device_id ||
+      latest?.device_id ||
+      "szafa_01"
+  );
 
-  document.getElementById("mapLat").textContent =
-    currentConfig?.lat ?? "—";
-
-  document.getElementById("mapLon").textContent =
-    currentConfig?.lon ?? "—";
-
-  document.getElementById("mapMode").textContent =
-    currentDeviceStatus?.mode ||
-    currentConfig?.mode ||
-    "—";
-
-  document.getElementById("mapState").textContent =
-    formatValue(currentDeviceStatus?.state ?? latest?.state);
-
-  document.getElementById("mapLastRead").textContent =
-    formatValue(getResolvedLiveTimestamp(latest));
+  setText("mapLat", currentConfig?.lat);
+  setText("mapLon", currentConfig?.lon);
+  setText("mapMode", currentDeviceStatus?.mode || currentConfig?.mode || "—");
+  setText("mapState", currentDeviceStatus?.state ?? latest?.state);
+  setText("mapLastRead", currentDeviceStatus?.timestamp_real || latest?.timestamp_real);
 }
 
 function initOrUpdateMap() {
@@ -579,7 +305,7 @@ function initOrUpdateMap() {
     }).addTo(mapInstance);
 
     markerInstance = L.marker([lat, lon]).addTo(mapInstance);
-    markerInstance.bindPopup("SSO / szafa_01").openPopup();
+    markerInstance.bindPopup("SSO / szafa").openPopup();
   } else {
     mapInstance.setView([lat, lon], 13);
 
@@ -593,61 +319,211 @@ function initOrUpdateMap() {
   }, 200);
 }
 
+function getCurrentCycleKey() {
+  if (!currentCycle?.planned_on || !currentCycle?.planned_off) return null;
+  return `${currentCycle.planned_on}|${currentCycle.planned_off}`;
+}
+
+function updateReportCycleSelect() {
+  const select = document.getElementById("reportCycleSelect");
+  const previousValue = selectedReportCycleKey;
+
+  select.innerHTML = "";
+
+  if (!currentReportCycles.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Brak danych";
+    select.appendChild(option);
+    selectedReportCycleKey = null;
+    return;
+  }
+
+  currentReportCycles.forEach((cycle) => {
+    const option = document.createElement("option");
+    option.value = cycle.key;
+    option.textContent = `${cycle.planned_on} → ${cycle.planned_off}`;
+    select.appendChild(option);
+  });
+
+  const currentCycleKey = getCurrentCycleKey();
+  const existsPrevious = currentReportCycles.some((cycle) => cycle.key === previousValue);
+  const existsCurrent = currentReportCycles.some((cycle) => cycle.key === currentCycleKey);
+
+  if (existsPrevious) {
+    selectedReportCycleKey = previousValue;
+  } else if (existsCurrent) {
+    selectedReportCycleKey = currentCycleKey;
+  } else {
+    selectedReportCycleKey = currentReportCycles[0].key;
+  }
+
+  select.value = selectedReportCycleKey;
+}
+
+function setStatsBlock(prefix, stats) {
+  setText(`${prefix}Min`, formatLuxValue(stats?.min));
+  setText(`${prefix}Max`, formatLuxValue(stats?.max));
+  setText(`${prefix}Avg`, formatLuxValue(stats?.avg));
+  setText(`${prefix}Count`, stats?.count ?? 0, "0");
+}
+
+function setBarValue(fillId, valueId, value, maxValue) {
+  const fillEl = document.getElementById(fillId);
+  const valueEl = document.getElementById(valueId);
+
+  if (!fillEl || !valueEl) return;
+
+  if (!Number.isFinite(value) || !Number.isFinite(maxValue) || maxValue <= 0) {
+    fillEl.style.width = "0%";
+    valueEl.textContent = "—";
+    return;
+  }
+
+  const width = Math.max(6, Math.round((value / maxValue) * 100));
+  fillEl.style.width = `${Math.min(width, 100)}%`;
+  valueEl.textContent = formatLuxValue(value);
+}
+
+function updateReportSection() {
+  const report = currentReportDetails;
+
+  if (!report) {
+    setText("reportPlannedOn", "—");
+    setText("reportPlannedOff", "—");
+    setText("reportActualOn", "—");
+    setText("reportActualOff", "—");
+    setText("reportDiffOn", "—");
+    setText("reportDiffOff", "—");
+    setText("reportLuxOn", "—");
+    setText("reportLuxOff", "—");
+
+    setStatsBlock("beforeOn", { min: null, max: null, avg: null, count: 0 });
+    setStatsBlock("afterOn", { min: null, max: null, avg: null, count: 0 });
+    setStatsBlock("beforeOff", { min: null, max: null, avg: null, count: 0 });
+    setStatsBlock("afterOff", { min: null, max: null, avg: null, count: 0 });
+
+    setBarValue("chartBeforeOn", "chartBeforeOnValue", null, null);
+    setBarValue("chartAfterOn", "chartAfterOnValue", null, null);
+    setBarValue("chartBeforeOff", "chartBeforeOffValue", null, null);
+    setBarValue("chartAfterOff", "chartAfterOffValue", null, null);
+    return;
+  }
+
+  const summary = report.summary || {};
+  const analytics = report.analytics || {};
+
+  setText("reportPlannedOn", summary.planned_on);
+  setText("reportPlannedOff", summary.planned_off);
+  setText("reportActualOn", summary.actual_on);
+  setText("reportActualOff", summary.actual_off);
+  setText("reportDiffOn", formatSecondsToReadable(summary.diff_on_s));
+  setText("reportDiffOff", formatSecondsToReadable(summary.diff_off_s));
+  setText("reportLuxOn", formatLuxValue(summary.lux_on));
+  setText("reportLuxOff", formatLuxValue(summary.lux_off));
+
+  setStatsBlock("beforeOn", analytics.before_on);
+  setStatsBlock("afterOn", analytics.after_on);
+  setStatsBlock("beforeOff", analytics.before_off);
+  setStatsBlock("afterOff", analytics.after_off);
+
+  const maxOnAvg = Math.max(
+    Number(analytics.before_on?.avg) || 0,
+    Number(analytics.after_on?.avg) || 0
+  );
+
+  const maxOffAvg = Math.max(
+    Number(analytics.before_off?.avg) || 0,
+    Number(analytics.after_off?.avg) || 0
+  );
+
+  setBarValue("chartBeforeOn", "chartBeforeOnValue", Number(analytics.before_on?.avg), maxOnAvg);
+  setBarValue("chartAfterOn", "chartAfterOnValue", Number(analytics.after_on?.avg), maxOnAvg);
+  setBarValue("chartBeforeOff", "chartBeforeOffValue", Number(analytics.before_off?.avg), maxOffAvg);
+  setBarValue("chartAfterOff", "chartAfterOffValue", Number(analytics.after_off?.avg), maxOffAvg);
+}
+
 async function loadConfig() {
+  currentConfig = await fetchJson("/api/config");
+
+  document.getElementById("configLat").value = currentConfig?.lat ?? "";
+  document.getElementById("configLon").value = currentConfig?.lon ?? "";
+  document.getElementById("configMode").value = currentConfig?.mode ?? "AUTO";
+  document.getElementById("manualOn").value = currentConfig?.manual_on ?? "19:50";
+  document.getElementById("manualOff").value = currentConfig?.manual_off ?? "05:00";
+
+  document.getElementById("locationStatus").textContent =
+    `Aktualna lokalizacja: ${currentConfig?.lat}, ${currentConfig?.lon}`;
+
+  document.getElementById("modeStatus").textContent =
+    `Aktualny tryb: ${currentConfig?.mode}`;
+
+  updateMapPanel();
+  initOrUpdateMap();
+}
+
+async function loadDashboard() {
+  currentDashboard = await fetchJson("/api/dashboard");
+  currentDeviceStatus = currentDashboard?.device_status || null;
+  currentCycle = currentDashboard?.current_cycle || null;
+
+  updateTopbar();
+  updateDashboardSection();
+  updateMapPanel();
+}
+
+async function loadHistory() {
   try {
-    currentConfig = await fetchJson("/api/config");
+    const typeFilter = document.getElementById("typeFilter").value;
+    const onlyAlarms = document.getElementById("onlyAlarms").checked;
+    const cycleKey = selectedReportCycleKey || "";
 
-    document.getElementById("configLat").value = currentConfig?.lat ?? "";
-    document.getElementById("configLon").value = currentConfig?.lon ?? "";
-    document.getElementById("configMode").value = currentConfig?.mode ?? "AUTO";
-    document.getElementById("manualOn").value = currentConfig?.manual_on ?? "19:50";
-    document.getElementById("manualOff").value = currentConfig?.manual_off ?? "05:00";
+    const query = buildQuery({
+      type: typeFilter === "all" ? "" : typeFilter,
+      only_alarms: onlyAlarms ? "true" : "",
+      cycle_key: cycleKey,
+      limit: HISTORY_PAGE_SIZE,
+      offset: 0
+    });
 
-    document.getElementById("locationStatus").textContent =
-      `Aktualna lokalizacja: ${currentConfig?.lat}, ${currentConfig?.lon}`;
-
-    document.getElementById("modeStatus").textContent =
-      `Aktualny tryb: ${currentConfig?.mode}`;
-
-    updateMapPanel();
-    initOrUpdateMap();
+    const response = await fetchJson(`/api/history${query}`);
+    currentHistoryRows = response.rows || [];
+    renderHistoryTable();
   } catch (error) {
-    console.error("Błąd loadConfig:", error);
+    console.error("Błąd loadHistory:", error);
   }
 }
 
-async function loadDeviceStatus() {
+async function loadReportCycles() {
   try {
-    currentDeviceStatus = await fetchJson("/api/device-status");
+    const response = await fetchJson("/api/report-cycles?limit=200");
+    currentReportCycles = response.rows || [];
+    updateReportCycleSelect();
   } catch (error) {
-    console.error("Błąd loadDeviceStatus:", error);
+    console.error("Błąd loadReportCycles:", error);
+    currentReportCycles = [];
+    updateReportCycleSelect();
   }
 }
 
-async function loadCurrentCycle() {
+async function loadSelectedReportCycle() {
   try {
-    currentCycle = await fetchJson("/api/current-cycle");
-  } catch (error) {
-    console.error("Błąd loadCurrentCycle:", error);
-  }
-}
+    if (!selectedReportCycleKey) {
+      currentReportDetails = null;
+      updateReportSection();
+      return;
+    }
 
-async function loadData() {
-  try {
-    const [data, latest, alarms, stats] = await Promise.all([
-      fetchJson("/api/data"),
-      fetchJson("/api/data/latest").catch(() => null),
-      fetchJson("/api/alarms"),
-      fetchJson("/api/stats")
-    ]);
+    const query = buildQuery({
+      cycle_key: selectedReportCycleKey
+    });
 
-    allData = data;
-    updateDashboard(latest, stats, alarms);
-    renderTable();
-    updateMapPanel();
-    updateReportAnalytics();
+    currentReportDetails = await fetchJson(`/api/report-cycle${query}`);
+    updateReportSection();
   } catch (error) {
-    console.error("Błąd loadData:", error);
+    console.error("Błąd loadSelectedReportCycle:", error);
+    currentReportDetails = null;
+    updateReportSection();
   }
 }
 
@@ -669,12 +545,53 @@ function updateRealtimeClock() {
   }
 }
 
-document.getElementById("typeFilter").addEventListener("change", renderTable);
-document.getElementById("onlyAlarms").addEventListener("change", renderTable);
+function getRefreshIntervalMs() {
+  return currentDeviceStatus?.window_status === "okno_pomiarowe"
+    ? FAST_REFRESH_MS
+    : SLOW_REFRESH_MS;
+}
 
-document.getElementById("reportCycleSelect").addEventListener("change", (event) => {
+function scheduleAdaptiveRefresh() {
+  const nextMs = getRefreshIntervalMs();
+
+  if (refreshTimer) {
+    clearTimeout(refreshTimer);
+  }
+
+  refreshTimer = setTimeout(async () => {
+    try {
+      await loadDashboard();
+
+      const activeTab = document.querySelector(".tab.active")?.id || "dashboard";
+
+      if (activeTab === "data") {
+        await loadHistory();
+      }
+
+      if (activeTab === "report") {
+        await loadReportCycles();
+        await loadSelectedReportCycle();
+      }
+    } catch (error) {
+      console.error("Błąd adaptive refresh:", error);
+    } finally {
+      scheduleAdaptiveRefresh();
+    }
+  }, nextMs);
+}
+
+document.getElementById("typeFilter").addEventListener("change", async () => {
+  await loadHistory();
+});
+
+document.getElementById("onlyAlarms").addEventListener("change", async () => {
+  await loadHistory();
+});
+
+document.getElementById("reportCycleSelect").addEventListener("change", async (event) => {
   selectedReportCycleKey = event.target.value || null;
-  updateReportAnalytics();
+  await loadSelectedReportCycle();
+  await loadHistory();
 });
 
 document.getElementById("checkBtn").addEventListener("click", async () => {
@@ -701,9 +618,7 @@ document.getElementById("saveLocationBtn").addEventListener("click", async () =>
 
     await postJson("/api/config", { lat, lon });
     await loadConfig();
-    await loadDeviceStatus();
-    await loadCurrentCycle();
-    await loadData();
+    await loadDashboard();
 
     alert("Zapisano lokalizację.");
   } catch (error) {
@@ -718,9 +633,7 @@ document.getElementById("saveModeBtn").addEventListener("click", async () => {
 
     await postJson("/api/config", { mode });
     await loadConfig();
-    await loadDeviceStatus();
-    await loadCurrentCycle();
-    await loadData();
+    await loadDashboard();
 
     alert("Zapisano tryb pracy.");
   } catch (error) {
@@ -736,9 +649,7 @@ document.getElementById("saveManualPlanBtn").addEventListener("click", async () 
 
     await postJson("/api/config", { manual_on, manual_off });
     await loadConfig();
-    await loadDeviceStatus();
-    await loadCurrentCycle();
-    await loadData();
+    await loadDashboard();
 
     alert("Zapisano plan ręczny.");
   } catch (error) {
@@ -754,9 +665,10 @@ document.getElementById("forceOnBtn").addEventListener("click", async () => {
     document.getElementById("forceStatus").textContent =
       `Status testu: dodano rekord ${result.entry.type} / stan 1`;
 
-    await loadDeviceStatus();
-    await loadCurrentCycle();
-    await loadData();
+    await loadDashboard();
+    await loadHistory();
+    await loadReportCycles();
+    await loadSelectedReportCycle();
   } catch (error) {
     console.error(error);
     alert("Nie udało się wymusić ON.");
@@ -770,9 +682,10 @@ document.getElementById("forceOffBtn").addEventListener("click", async () => {
     document.getElementById("forceStatus").textContent =
       `Status testu: dodano rekord ${result.entry.type} / stan 0`;
 
-    await loadDeviceStatus();
-    await loadCurrentCycle();
-    await loadData();
+    await loadDashboard();
+    await loadHistory();
+    await loadReportCycles();
+    await loadSelectedReportCycle();
   } catch (error) {
     console.error(error);
     alert("Nie udało się wymusić OFF.");
@@ -781,19 +694,19 @@ document.getElementById("forceOffBtn").addEventListener("click", async () => {
 
 async function initApp() {
   updateRealtimeClock();
+
   await loadConfig();
-  await loadDeviceStatus();
-  await loadCurrentCycle();
-  await loadData();
+  await loadDashboard();
+  await loadReportCycles();
+  await loadSelectedReportCycle();
+  await loadHistory();
+
+  scheduleAdaptiveRefresh();
 }
 
-initApp();
-
-setInterval(async () => {
-  await loadDeviceStatus();
-  await loadCurrentCycle();
-  await loadData();
-}, 5000);
+initApp().catch((error) => {
+  console.error("Błąd initApp:", error);
+});
 
 setInterval(() => {
   updateRealtimeClock();
