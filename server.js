@@ -8,6 +8,9 @@ const PORT = process.env.PORT || 3000;
 const WINDOW_BEFORE_MIN = 60;
 const WINDOW_AFTER_MIN = 60;
 const REPORT_PADDING_HOURS = 1;
+const DEFAULT_HISTORY_LIMIT = 200;
+const MAX_HISTORY_LIMIT = 2000;
+const DASHBOARD_ALARMS_LIMIT = 10;
 
 app.use(express.json({ limit: "10mb" }));
 app.use(express.static(path.join(__dirname, "public")));
@@ -360,6 +363,14 @@ let currentCycle = {
 
 let lastAutoReportKey = null;
 
+function getResolvedPlannedOn() {
+  return currentCycle.planned_on || deviceStatus.planned_on || null;
+}
+
+function getResolvedPlannedOff() {
+  return currentCycle.planned_off || deviceStatus.planned_off || null;
+}
+
 function refreshDeviceShadowDerivedFields() {
   if (!deviceStatus.device_id) {
     deviceStatus.device_id = currentCycle.device_id || "szafa_01";
@@ -369,20 +380,18 @@ function refreshDeviceShadowDerivedFields() {
     deviceStatus.mode = config.mode || "AUTO";
   }
 
-  if (!deviceStatus.planned_on) {
-    deviceStatus.planned_on = currentCycle.planned_on || null;
-  }
+  const resolvedPlannedOn = getResolvedPlannedOn();
+  const resolvedPlannedOff = getResolvedPlannedOff();
 
-  if (!deviceStatus.planned_off) {
-    deviceStatus.planned_off = currentCycle.planned_off || null;
-  }
+  deviceStatus.planned_on = resolvedPlannedOn;
+  deviceStatus.planned_off = resolvedPlannedOff;
 
   const normalizedWindowStatus = normalizeWindowStatus(deviceStatus.window_status);
 
   if (normalizedWindowStatus === "unknown") {
     deviceStatus.window_status = calculateWindowStatusFromPlan(
-      deviceStatus.planned_on,
-      deviceStatus.planned_off
+      resolvedPlannedOn,
+      resolvedPlannedOff
     );
   } else {
     deviceStatus.window_status = normalizedWindowStatus;
@@ -570,6 +579,26 @@ async function initDatabase() {
   await pool.query(`
     ALTER TABLE daily_reports
     ADD COLUMN IF NOT EXISTS provider_message_id TEXT
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_lighting_logs_timestamp_real
+    ON lighting_logs(timestamp_real)
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_lighting_logs_type
+    ON lighting_logs(type)
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_lighting_logs_planned_cycle
+    ON lighting_logs(planned_on, planned_off)
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_lighting_logs_device_id
+    ON lighting_logs(device_id)
   `);
 
   console.log("PostgreSQL OK - tabele lighting_logs i daily_reports gotowe");
@@ -1181,6 +1210,333 @@ function startAutoReportScheduler() {
   }, 30000);
 }
 
+async function getLatestLog(deviceId = null) {
+  const params = [];
+  let query = `
+    SELECT
+      id,
+      device_id,
+      timestamp_real,
+      type,
+      lux,
+      state,
+      planned_on,
+      planned_off,
+      difference_s,
+      received_at
+    FROM lighting_logs
+  `;
+
+  if (deviceId) {
+    params.push(deviceId);
+    query += " WHERE device_id = $1 ";
+  }
+
+  query += " ORDER BY id DESC LIMIT 1 ";
+
+  const result = await pool.query(query, params);
+  return result.rows[0] || null;
+}
+
+async function getRecentAlarms(limit = DASHBOARD_ALARMS_LIMIT, deviceId = null) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || DASHBOARD_ALARMS_LIMIT, 100));
+  const params = [];
+  let paramIndex = 1;
+
+  let query = `
+    SELECT
+      id,
+      device_id,
+      timestamp_real,
+      type,
+      lux,
+      state,
+      planned_on,
+      planned_off,
+      difference_s,
+      received_at
+    FROM lighting_logs
+    WHERE type IN ('alarm_brak_zalaczenia', 'alarm_brak_wylaczenia')
+  `;
+
+  if (deviceId) {
+    query += ` AND device_id = $${paramIndex} `;
+    params.push(deviceId);
+    paramIndex += 1;
+  }
+
+  query += ` ORDER BY id DESC LIMIT $${paramIndex} `;
+  params.push(safeLimit);
+
+  const result = await pool.query(query, params);
+  return result.rows;
+}
+
+async function getStatsSnapshot(deviceId = null) {
+  const params = [];
+  let deviceCondition = "";
+  if (deviceId) {
+    params.push(deviceId);
+    deviceCondition = " AND device_id = $1 ";
+  }
+
+  const query = `
+    SELECT
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE type = 'pomiar')::int AS pomiar,
+      COUNT(*) FILTER (WHERE type = 'zmiana_on')::int AS zmiana_on,
+      COUNT(*) FILTER (WHERE type = 'zmiana_off')::int AS zmiana_off,
+      COUNT(*) FILTER (WHERE type = 'zmiana_poza_oknem')::int AS zmiana_poza_oknem,
+      COUNT(*) FILTER (WHERE type = 'alarm_brak_zalaczenia')::int AS alarm_brak_zalaczenia,
+      COUNT(*) FILTER (WHERE type = 'alarm_brak_wylaczenia')::int AS alarm_brak_wylaczenia,
+      COUNT(*) FILTER (WHERE type = 'test_manual')::int AS test_manual
+    FROM lighting_logs
+    WHERE 1=1
+    ${deviceCondition}
+  `;
+
+  const result = await pool.query(query, params);
+  return result.rows[0];
+}
+
+function buildDashboardPayload({ latest, stats, alarms }) {
+  finalizeCycleParts();
+
+  return {
+    status: "ok",
+    config,
+    deviceStatus,
+    currentCycle,
+    latest,
+    stats,
+    alarms,
+    resolved: {
+      planned_on: getResolvedPlannedOn(),
+      planned_off: getResolvedPlannedOff(),
+      timestamp_real:
+        deviceStatus.timestamp_real ||
+        latest?.timestamp_real ||
+        null
+    },
+    server_time: formatWarsawDateTime(new Date())
+  };
+}
+
+function sanitizeHistoryLimit(rawLimit) {
+  const parsed = Number(rawLimit);
+  if (!Number.isInteger(parsed) || parsed <= 0) return DEFAULT_HISTORY_LIMIT;
+  return Math.min(parsed, MAX_HISTORY_LIMIT);
+}
+
+function sanitizeHistoryOffset(rawOffset) {
+  const parsed = Number(rawOffset);
+  if (!Number.isInteger(parsed) || parsed < 0) return 0;
+  return parsed;
+}
+
+function buildCycleFilterFromQuery(cycleKey) {
+  if (!cycleKey || typeof cycleKey !== "string") return null;
+  const parts = cycleKey.split("|");
+  if (parts.length !== 2) return null;
+
+  const plannedOn = parts[0] || null;
+  const plannedOff = parts[1] || null;
+
+  if (!plannedOn || !plannedOff) return null;
+
+  return { plannedOn, plannedOff };
+}
+
+async function getHistoryPage({
+  type = "all",
+  onlyAlarms = false,
+  cycleKey = null,
+  deviceId = null,
+  limit = DEFAULT_HISTORY_LIMIT,
+  offset = 0
+} = {}) {
+  const safeLimit = sanitizeHistoryLimit(limit);
+  const safeOffset = sanitizeHistoryOffset(offset);
+
+  const params = [];
+  const where = [];
+  let paramIndex = 1;
+
+  if (deviceId) {
+    where.push(`device_id = $${paramIndex}`);
+    params.push(deviceId);
+    paramIndex += 1;
+  }
+
+  if (type && type !== "all") {
+    where.push(`type = $${paramIndex}`);
+    params.push(type);
+    paramIndex += 1;
+  }
+
+  if (onlyAlarms) {
+    where.push(`type IN ('alarm_brak_zalaczenia', 'alarm_brak_wylaczenia')`);
+  }
+
+  const cycleFilter = buildCycleFilterFromQuery(cycleKey);
+  if (cycleFilter) {
+    where.push(`planned_on = $${paramIndex}`);
+    params.push(cycleFilter.plannedOn);
+    paramIndex += 1;
+
+    where.push(`planned_off = $${paramIndex}`);
+    params.push(cycleFilter.plannedOff);
+    paramIndex += 1;
+  }
+
+  const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+  const countQuery = `
+    SELECT COUNT(*)::int AS total
+    FROM lighting_logs
+    ${whereClause}
+  `;
+
+  const rowsQuery = `
+    SELECT
+      id,
+      device_id,
+      timestamp_real,
+      type,
+      lux,
+      state,
+      planned_on,
+      planned_off,
+      difference_s,
+      received_at
+    FROM lighting_logs
+    ${whereClause}
+    ORDER BY id DESC
+    LIMIT $${paramIndex}
+    OFFSET $${paramIndex + 1}
+  `;
+
+  const countResult = await pool.query(countQuery, params);
+  const rowsResult = await pool.query(rowsQuery, [...params, safeLimit, safeOffset]);
+
+  return {
+    total: countResult.rows[0]?.total ?? 0,
+    limit: safeLimit,
+    offset: safeOffset,
+    rows: rowsResult.rows
+  };
+}
+
+async function getAvailableCycles(deviceId = null) {
+  const params = [];
+  let query = `
+    SELECT
+      planned_on,
+      planned_off,
+      MAX(device_id) AS device_id,
+      MAX(timestamp_real) AS latest_timestamp,
+      COUNT(*)::int AS record_count
+    FROM lighting_logs
+    WHERE planned_on IS NOT NULL
+      AND planned_on <> ''
+      AND planned_off IS NOT NULL
+      AND planned_off <> ''
+  `;
+
+  if (deviceId) {
+    params.push(deviceId);
+    query += ` AND device_id = $1 `;
+  }
+
+  query += `
+    GROUP BY planned_on, planned_off
+    ORDER BY planned_on DESC
+  `;
+
+  const result = await pool.query(query, params);
+
+  return result.rows.map((row) => ({
+    key: `${row.planned_on}|${row.planned_off}`,
+    planned_on: row.planned_on,
+    planned_off: row.planned_off,
+    cycle_date: deriveCycleDateFromPlannedOn(row.planned_on) || null,
+    device_id: row.device_id || null,
+    latest_timestamp: row.latest_timestamp || null,
+    record_count: row.record_count || 0
+  }));
+}
+
+async function getReportDetailsByCycleKey(cycleKey, deviceId = null) {
+  const cycleFilter = buildCycleFilterFromQuery(cycleKey);
+  if (!cycleFilter) {
+    throw new Error("Nieprawidłowy cycle_key.");
+  }
+
+  const cycleDate = deriveCycleDateFromPlannedOn(cycleFilter.plannedOn) || formatWarsawDateOnly();
+
+  const report = await createReportFromDatabaseCycle({
+    cycleDate,
+    deviceId: deviceId || undefined
+  });
+
+  if (
+    report.summary.planned_on !== cycleFilter.plannedOn ||
+    report.summary.planned_off !== cycleFilter.plannedOff
+  ) {
+    const range = resolveReportRange({
+      cycleDate,
+      plannedOn: cycleFilter.plannedOn,
+      plannedOff: cycleFilter.plannedOff
+    });
+
+    const rows = await getLogsForRange(range, deviceId || currentCycle.device_id || deviceStatus.device_id || "szafa_01");
+    const expectedCycleWindowCount = await countLogsForCycleWindow({
+      plannedOn: cycleFilter.plannedOn,
+      plannedOff: cycleFilter.plannedOff,
+      deviceId: deviceId || currentCycle.device_id || deviceStatus.device_id || "szafa_01"
+    });
+
+    const summary = buildReportSummary(rows, {
+      device_id: deviceId || currentCycle.device_id || deviceStatus.device_id || "szafa_01",
+      cycle_date: cycleDate,
+      planned_on: cycleFilter.plannedOn,
+      planned_off: cycleFilter.plannedOff,
+      actual_on: null,
+      actual_off: null,
+      lux_on: null,
+      lux_off: null,
+      diff_on_s: null,
+      diff_off_s: null,
+      alarm_on: false,
+      alarm_off: false,
+      on_finalized: false,
+      off_finalized: false
+    });
+
+    return {
+      status: "ok",
+      source: "explicit_cycle_key",
+      summary,
+      range,
+      rows,
+      rows_count: rows.length,
+      expected_cycle_window_count: expectedCycleWindowCount,
+      file_name: buildReportFileName(summary.cycle_date)
+    };
+  }
+
+  return {
+    status: "ok",
+    source: report.source,
+    summary: report.summary,
+    range: report.range,
+    rows: report.rows,
+    rows_count: report.rows.length,
+    expected_cycle_window_count: report.expected_cycle_window_count,
+    file_name: report.fileName
+  };
+}
+
 app.post("/api/data", async (req, res) => {
   try {
     const entry = {
@@ -1265,6 +1621,23 @@ app.get("/api/current-cycle", (req, res) => {
   res.json(currentCycle);
 });
 
+app.get("/api/dashboard", async (req, res) => {
+  try {
+    const deviceId = req.query.device_id || deviceStatus.device_id || currentCycle.device_id || null;
+
+    const [latest, stats, alarms] = await Promise.all([
+      getLatestLog(deviceId),
+      getStatsSnapshot(deviceId),
+      getRecentAlarms(DASHBOARD_ALARMS_LIMIT, deviceId)
+    ]);
+
+    res.json(buildDashboardPayload({ latest, stats, alarms }));
+  } catch (error) {
+    console.error("GET /api/dashboard error:", error);
+    res.status(500).json({ error: "Błąd odczytu danych dashboardu." });
+  }
+});
+
 app.post("/api/current-cycle/reset", (req, res) => {
   resetCurrentCycle();
   applyConfigToDeviceShadow();
@@ -1301,30 +1674,36 @@ app.get("/api/data", async (req, res) => {
   }
 });
 
+app.get("/api/data/history", async (req, res) => {
+  try {
+    const page = await getHistoryPage({
+      type: req.query.type || "all",
+      onlyAlarms: String(req.query.only_alarms || "false").toLowerCase() === "true",
+      cycleKey: req.query.cycle_key || null,
+      deviceId: req.query.device_id || deviceStatus.device_id || currentCycle.device_id || null,
+      limit: req.query.limit,
+      offset: req.query.offset
+    });
+
+    res.json({
+      status: "ok",
+      ...page
+    });
+  } catch (error) {
+    console.error("GET /api/data/history error:", error);
+    res.status(500).json({ error: "Błąd odczytu historii danych." });
+  }
+});
+
 app.get("/api/data/latest", async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT
-        id,
-        device_id,
-        timestamp_real,
-        type,
-        lux,
-        state,
-        planned_on,
-        planned_off,
-        difference_s,
-        received_at
-      FROM lighting_logs
-      ORDER BY id DESC
-      LIMIT 1
-    `);
+    const latest = await getLatestLog(req.query.device_id || deviceStatus.device_id || currentCycle.device_id || null);
 
-    if (!result.rows.length) {
+    if (!latest) {
       return res.status(404).json({ error: "Brak danych" });
     }
 
-    res.json(result.rows[0]);
+    res.json(latest);
   } catch (error) {
     console.error("GET /api/data/latest error:", error);
     res.status(500).json({ error: "Błąd odczytu ostatniego rekordu." });
@@ -1333,7 +1712,16 @@ app.get("/api/data/latest", async (req, res) => {
 
 app.get("/api/alarms", async (req, res) => {
   try {
-    const result = await pool.query(`
+    const limit = req.query.limit ? Number(req.query.limit) : null;
+    const deviceId = req.query.device_id || deviceStatus.device_id || currentCycle.device_id || null;
+
+    if (limit) {
+      const rows = await getRecentAlarms(limit, deviceId);
+      return res.json(rows);
+    }
+
+    const params = [];
+    let query = `
       SELECT
         id,
         device_id,
@@ -1347,9 +1735,16 @@ app.get("/api/alarms", async (req, res) => {
         received_at
       FROM lighting_logs
       WHERE type IN ('alarm_brak_zalaczenia', 'alarm_brak_wylaczenia')
-      ORDER BY id ASC
-    `);
+    `;
 
+    if (deviceId) {
+      params.push(deviceId);
+      query += " AND device_id = $1 ";
+    }
+
+    query += " ORDER BY id ASC ";
+
+    const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (error) {
     console.error("GET /api/alarms error:", error);
@@ -1359,322 +1754,4 @@ app.get("/api/alarms", async (req, res) => {
 
 app.get("/api/stats", async (req, res) => {
   try {
-    const totalResult = await pool.query("SELECT COUNT(*)::int AS count FROM lighting_logs");
-    const pomiarResult = await pool.query("SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'pomiar'");
-    const onResult = await pool.query("SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'zmiana_on'");
-    const offResult = await pool.query("SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'zmiana_off'");
-    const pozaResult = await pool.query("SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'zmiana_poza_oknem'");
-    const alarmOnResult = await pool.query("SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'alarm_brak_zalaczenia'");
-    const alarmOffResult = await pool.query("SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'alarm_brak_wylaczenia'");
-    const testResult = await pool.query("SELECT COUNT(*)::int AS count FROM lighting_logs WHERE type = 'test_manual'");
-
-    res.json({
-      total: totalResult.rows[0].count,
-      pomiar: pomiarResult.rows[0].count,
-      zmiana_on: onResult.rows[0].count,
-      zmiana_off: offResult.rows[0].count,
-      zmiana_poza_oknem: pozaResult.rows[0].count,
-      alarm_brak_zalaczenia: alarmOnResult.rows[0].count,
-      alarm_brak_wylaczenia: alarmOffResult.rows[0].count,
-      test_manual: testResult.rows[0].count
-    });
-  } catch (error) {
-    console.error("GET /api/stats error:", error);
-    res.status(500).json({ error: "Błąd statystyk." });
-  }
-});
-
-app.get("/api/check-status", async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT
-        id,
-        device_id,
-        timestamp_real,
-        type,
-        lux,
-        state,
-        planned_on,
-        planned_off,
-        difference_s,
-        received_at
-      FROM lighting_logs
-      ORDER BY id DESC
-      LIMIT 1
-    `);
-
-    const latest = result.rows.length ? result.rows[0] : null;
-
-    res.json({
-      ok: true,
-      mode: "manual_check_mock",
-      message: "Na tym etapie endpoint zwraca ostatni znany stan z backendu.",
-      latest
-    });
-  } catch (error) {
-    console.error("GET /api/check-status error:", error);
-    res.status(500).json({ error: "Błąd sprawdzania statusu." });
-  }
-});
-
-app.get("/api/config", (req, res) => {
-  res.json(config);
-});
-
-app.post("/api/config", (req, res) => {
-  const { lat, lon, mode, manual_on, manual_off } = req.body;
-
-  if (lat !== undefined) config.lat = Number(lat);
-  if (lon !== undefined) config.lon = Number(lon);
-  if (mode !== undefined) config.mode = mode;
-  if (manual_on !== undefined) config.manual_on = manual_on;
-  if (manual_off !== undefined) config.manual_off = manual_off;
-
-  applyConfigToDeviceShadow();
-
-  res.json({
-    status: "ok",
-    config,
-    deviceStatus,
-    currentCycle
-  });
-});
-
-app.post("/api/force", async (req, res) => {
-  try {
-    const { state } = req.body;
-
-    if (state !== 0 && state !== 1) {
-      return res.status(400).json({ error: "Nieprawidłowy stan. Użyj 0 lub 1." });
-    }
-
-    const timestamp = formatWarsawDateTime(new Date());
-
-    const entry = {
-      device_id: "szafa_01",
-      timestamp_real: timestamp,
-      type: "test_manual",
-      lux: null,
-      state,
-      planned_on: config.mode === "MANUAL" ? config.manual_on : deviceStatus.planned_on,
-      planned_off: config.mode === "MANUAL" ? config.manual_off : deviceStatus.planned_off,
-      difference_s: null,
-      received_at: new Date().toISOString()
-    };
-
-    await pool.query(
-      `
-      INSERT INTO lighting_logs
-      (device_id, timestamp_real, type, lux, state, planned_on, planned_off, difference_s, received_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-      `,
-      [
-        entry.device_id,
-        entry.timestamp_real,
-        entry.type,
-        entry.lux,
-        entry.state,
-        entry.planned_on,
-        entry.planned_off,
-        entry.difference_s,
-        entry.received_at
-      ]
-    );
-
-    deviceStatus.device_id = entry.device_id;
-    deviceStatus.timestamp_real = entry.timestamp_real;
-    deviceStatus.state = entry.state;
-    deviceStatus.lux = entry.lux;
-    if (entry.planned_on) deviceStatus.planned_on = entry.planned_on;
-    if (entry.planned_off) deviceStatus.planned_off = entry.planned_off;
-
-    refreshDeviceShadowDerivedFields();
-
-    res.json({
-      status: "ok",
-      message: "Dodano rekord testowy",
-      entry
-    });
-  } catch (error) {
-    console.error("POST /api/force error:", error);
-    res.status(500).json({ error: "Błąd dodawania rekordu testowego." });
-  }
-});
-
-app.get("/api/reports/preview", async (req, res) => {
-  try {
-    finalizeCycleParts();
-
-    const cycleDate = req.query.cycle_date || null;
-    const report = await createReportFromDatabaseCycle({ cycleDate });
-
-    res.json({
-      status: "ok",
-      source: report.source,
-      summary: report.summary,
-      range: report.range,
-      rows_count: report.rows.length,
-      expected_cycle_window_count: report.expected_cycle_window_count,
-      file_name: report.fileName
-    });
-  } catch (error) {
-    console.error("GET /api/reports/preview error:", error);
-    res.status(500).json({ error: "Błąd generowania podglądu raportu." });
-  }
-});
-
-app.get("/api/reports/csv", async (req, res) => {
-  try {
-    finalizeCycleParts();
-
-    const cycleDate = req.query.cycle_date || null;
-    const report = await createReportFromDatabaseCycle({ cycleDate });
-
-    res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader("Content-Disposition", `attachment; filename="${report.fileName}"`);
-    res.send(report.csv);
-  } catch (error) {
-    console.error("GET /api/reports/csv error:", error);
-    res.status(500).json({ error: "Błąd generowania pliku CSV." });
-  }
-});
-
-app.post("/api/reports/send-now", async (req, res) => {
-  try {
-    const emailTo = req.body?.email_to || process.env.REPORT_EMAIL_TO || null;
-    const resetCycleAfterSend = req.body?.reset_cycle_after_send === true;
-    const cycleDate = req.body?.cycle_date || null;
-
-    const result = await generateAndSendReport({
-      emailTo,
-      reportType: "manual_send",
-      resetCycleAfterSend,
-      cycleDate
-    });
-
-    res.json({
-      status: "ok",
-      message: "Raport został wygenerowany i wysłany mailem.",
-      email_to: result.email_to,
-      report_id: result.saved.id,
-      created_at: result.saved.created_at,
-      provider_message_id: result.providerResponse?.messageId || null,
-      source: result.report.source,
-      summary: result.report.summary,
-      range: result.report.range,
-      rows_count: result.report.rows.length,
-      expected_cycle_window_count: result.report.expected_cycle_window_count,
-      file_name: result.report.fileName
-    });
-  } catch (error) {
-    console.error("POST /api/reports/send-now error:", error);
-    res.status(500).json({
-      error: "Błąd generowania lub wysyłki raportu.",
-      details: error.message
-    });
-  }
-});
-
-app.get("/api/reports/history", async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT
-        id,
-        device_id,
-        cycle_date,
-        report_type,
-        email_to,
-        planned_on,
-        planned_off,
-        actual_on,
-        actual_off,
-        diff_on_s,
-        diff_off_s,
-        lux_on,
-        lux_off,
-        alarm_on,
-        alarm_off,
-        record_count,
-        range_start,
-        range_end,
-        provider_message_id,
-        created_at
-      FROM daily_reports
-      ORDER BY id DESC
-      LIMIT 100
-    `);
-
-    res.json(result.rows);
-  } catch (error) {
-    console.error("GET /api/reports/history error:", error);
-    res.status(500).json({ error: "Błąd odczytu historii raportów." });
-  }
-});
-
-app.get("/api/reports/history/:id/csv", async (req, res) => {
-  try {
-    const reportId = Number(req.params.id);
-
-    if (!Number.isInteger(reportId)) {
-      return res.status(400).json({ error: "Nieprawidłowe ID raportu." });
-    }
-
-    const result = await pool.query(
-      `
-      SELECT id, cycle_date, csv_content
-      FROM daily_reports
-      WHERE id = $1
-      LIMIT 1
-      `,
-      [reportId]
-    );
-
-    if (!result.rows.length) {
-      return res.status(404).json({ error: "Nie znaleziono raportu." });
-    }
-
-    const row = result.rows[0];
-    const fileName = buildReportFileName(row.cycle_date);
-
-    res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
-    res.send(row.csv_content || "");
-  } catch (error) {
-    console.error("GET /api/reports/history/:id/csv error:", error);
-    res.status(500).json({ error: "Błąd pobierania archiwalnego CSV." });
-  }
-});
-
-app.post("/api/admin/clear-data", async (req, res) => {
-  try {
-    await pool.query("TRUNCATE TABLE lighting_logs RESTART IDENTITY");
-    resetCurrentCycle();
-    applyConfigToDeviceShadow();
-
-    res.json({
-      status: "ok",
-      message: "Wyczyszczono dane historyczne i zresetowano bieżący cykl."
-    });
-  } catch (error) {
-    console.error("POST /api/admin/clear-data error:", error);
-    res.status(500).json({ error: "Błąd czyszczenia danych." });
-  }
-});
-
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
-});
-
-initDatabase()
-  .then(() => {
-    applyConfigToDeviceShadow();
-    startAutoReportScheduler();
-
-    app.listen(PORT, () => {
-      console.log(`Server działa na porcie ${PORT}`);
-    });
-  })
-  .catch((error) => {
-    console.error("Błąd inicjalizacji PostgreSQL:", error);
-    process.exit(1);
-  });
+    const stats = await getStatsSnapshot(req.query.device_id || deviceStatus.device_id ||
