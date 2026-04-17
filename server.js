@@ -1615,10 +1615,18 @@ async function getCycleReportByKey(cycleKey, deviceId = null) {
 }
 
 function getCurrentAlarmStatus() {
+  let activeAlarmOn = Boolean(currentCycle.active_alarm_on);
+  let activeAlarmOff = Boolean(currentCycle.active_alarm_off);
+
+  if (deviceStatus && (deviceStatus.state === 0 || deviceStatus.state === 1)) {
+    activeAlarmOn = false;
+    activeAlarmOff = false;
+  }
+
   return {
-    active_alarm_on: Boolean(currentCycle.active_alarm_on),
-    active_alarm_off: Boolean(currentCycle.active_alarm_off),
-    has_active_alarm: Boolean(currentCycle.active_alarm_on || currentCycle.active_alarm_off)
+    active_alarm_on: activeAlarmOn,
+    active_alarm_off: activeAlarmOff,
+    has_active_alarm: Boolean(activeAlarmOn || activeAlarmOff)
   };
 }
 
