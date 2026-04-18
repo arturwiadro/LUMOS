@@ -871,7 +871,11 @@ function buildReportCsv(report) {
   return lines.join("\n");
 }
 
-async function findReportCycleAnchor({ cycleDate = null, deviceId = null } = {}) {
+async function findReportCycleAnchor({
+  cycleDate = null,
+  deviceId = null,
+  completedOnly = false
+} = {}) {
   const params = [];
   let paramIndex = 1;
 
@@ -903,6 +907,12 @@ async function findReportCycleAnchor({ cycleDate = null, deviceId = null } = {})
   if (cycleDate) {
     query += ` AND planned_on LIKE $${paramIndex} `;
     params.push(`${cycleDate}%`);
+    paramIndex += 1;
+  }
+
+  if (completedOnly) {
+    query += ` AND planned_off < $${paramIndex} `;
+    params.push(formatWarsawDateTime(new Date()));
     paramIndex += 1;
   }
 
@@ -947,7 +957,8 @@ async function createReportFromDatabaseCycle(options = {}) {
 
   const anchor = await findReportCycleAnchor({
     cycleDate: options.cycleDate || null,
-    deviceId: preferredDeviceId
+    deviceId: preferredDeviceId,
+    completedOnly: options.completedOnly === true
   });
 
   if (anchor) {
@@ -985,7 +996,7 @@ async function createReportFromDatabaseCycle(options = {}) {
 
     const report = {
       generated_at: new Date().toISOString(),
-      source: "database_cycle_anchor",
+      source: options.completedOnly === true ? "database_last_completed_cycle" : "database_cycle_anchor",
       anchor,
       range,
       summary,
@@ -1247,14 +1258,16 @@ async function generateAndSendReport({
   emailTo,
   reportType = "manual_send",
   resetCycleAfterSend = false,
-  cycleDate = null
+  cycleDate = null,
+  completedOnly = false
 } = {}) {
   finalizeCycleParts();
 
   const finalEmail = emailTo || process.env.REPORT_EMAIL_TO;
 
   const report = await createReportFromDatabaseCycle({
-    cycleDate
+    cycleDate,
+    completedOnly
   });
 
   const providerResponse = await sendReportEmailViaBrevoApi(report, finalEmail);
@@ -1301,7 +1314,8 @@ function startAutoReportScheduler() {
           const result = await generateAndSendReport({
             emailTo: process.env.REPORT_EMAIL_TO,
             reportType: "auto_10_00",
-            resetCycleAfterSend: true
+            resetCycleAfterSend: true,
+            completedOnly: true
           });
 
           console.log(
