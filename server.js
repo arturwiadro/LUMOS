@@ -128,14 +128,88 @@ function toBase64Utf8(text) {
   return Buffer.from(text, "utf8").toString("base64");
 }
 
-function parseTimestampString(value) {
+// =====================================
+// LOKALNE OPERACJE NA CZASIE YYYY-MM-DD HH:mm:ss
+// =====================================
+function parseLocalTimestampParts(value) {
   if (!isFullDateTime(value)) return null;
 
   const [datePart, timePart] = value.split(" ");
   const [year, month, day] = datePart.split("-").map(Number);
   const [hour, minute, second] = timePart.split(":").map(Number);
 
-  const parsed = new Date(year, month - 1, day, hour, minute, second);
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    !Number.isInteger(hour) ||
+    !Number.isInteger(minute) ||
+    !Number.isInteger(second)
+  ) {
+    return null;
+  }
+
+  return { year, month, day, hour, minute, second };
+}
+
+function formatLocalTimestampParts(parts) {
+  return [
+    String(parts.year).padStart(4, "0"),
+    "-",
+    String(parts.month).padStart(2, "0"),
+    "-",
+    String(parts.day).padStart(2, "0"),
+    " ",
+    String(parts.hour).padStart(2, "0"),
+    ":",
+    String(parts.minute).padStart(2, "0"),
+    ":",
+    String(parts.second).padStart(2, "0")
+  ].join("");
+}
+
+function shiftLocalDateTimeString(value, hours = 0, minutes = 0, seconds = 0) {
+  const parts = parseLocalTimestampParts(value);
+  if (!parts) return null;
+
+  const date = new Date(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    parts.second
+  );
+
+  if (Number.isNaN(date.getTime())) return null;
+
+  date.setHours(date.getHours() + hours);
+  date.setMinutes(date.getMinutes() + minutes);
+  date.setSeconds(date.getSeconds() + seconds);
+
+  return formatLocalTimestampParts({
+    year: date.getFullYear(),
+    month: date.getMonth() + 1,
+    day: date.getDate(),
+    hour: date.getHours(),
+    minute: date.getMinutes(),
+    second: date.getSeconds()
+  });
+}
+
+function parseTimestampString(value) {
+  const parts = parseLocalTimestampParts(value);
+  if (!parts) return null;
+
+  const parsed = new Date(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    parts.second
+  );
+
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
@@ -631,16 +705,16 @@ async function initDatabase() {
   console.log("PostgreSQL OK - tabele lighting_logs i daily_reports gotowe");
 }
 
+// =====================================
+// POPRAWIONY ZAKRES RAPORTU
+// =====================================
 function resolveReportRange({ cycleDate, plannedOn, plannedOff }) {
   if (isFullDateTime(plannedOn) && isFullDateTime(plannedOff)) {
-    const onDate = parseTimestampString(plannedOn);
-    const offDate = parseTimestampString(plannedOff);
+    const start = shiftLocalDateTimeString(plannedOn, -REPORT_PADDING_HOURS, 0, 0);
+    const end = shiftLocalDateTimeString(plannedOff, REPORT_PADDING_HOURS, 0, 0);
 
-    if (onDate && offDate) {
-      return {
-        start: formatWarsawDateTime(addHours(onDate, -REPORT_PADDING_HOURS)),
-        end: formatWarsawDateTime(addHours(offDate, REPORT_PADDING_HOURS))
-      };
+    if (start && end) {
+      return { start, end };
     }
   }
 
@@ -648,14 +722,14 @@ function resolveReportRange({ cycleDate, plannedOn, plannedOff }) {
   const nextDay = addDaysToDateString(effectiveCycleDate, 1);
 
   if (isTimeOnly(plannedOn) && isTimeOnly(plannedOff)) {
-    const onDate = parseTimestampString(`${effectiveCycleDate} ${plannedOn}:00`);
-    const offDate = parseTimestampString(`${nextDay} ${plannedOff}:00`);
+    const onString = `${effectiveCycleDate} ${plannedOn}:00`;
+    const offString = `${nextDay} ${plannedOff}:00`;
 
-    if (onDate && offDate) {
-      return {
-        start: formatWarsawDateTime(addHours(onDate, -REPORT_PADDING_HOURS)),
-        end: formatWarsawDateTime(addHours(offDate, REPORT_PADDING_HOURS))
-      };
+    const start = shiftLocalDateTimeString(onString, -REPORT_PADDING_HOURS, 0, 0);
+    const end = shiftLocalDateTimeString(offString, REPORT_PADDING_HOURS, 0, 0);
+
+    if (start && end) {
+      return { start, end };
     }
   }
 
@@ -871,6 +945,9 @@ function buildReportCsv(report) {
   return lines.join("\n");
 }
 
+// =====================================
+// POPRAWIONY WYBÓR OSTATNIEGO ZAKOŃCZONEGO CYKLU
+// =====================================
 async function findReportCycleAnchor({
   cycleDate = null,
   deviceId = null,
@@ -881,16 +958,10 @@ async function findReportCycleAnchor({
 
   let query = `
     SELECT
-      id,
-      device_id,
-      timestamp_real,
-      type,
-      lux,
-      state,
       planned_on,
       planned_off,
-      difference_s,
-      received_at
+      MAX(device_id) AS device_id,
+      MAX(timestamp_real) AS timestamp_real
     FROM lighting_logs
     WHERE planned_on IS NOT NULL
       AND planned_on <> ''
@@ -917,18 +988,8 @@ async function findReportCycleAnchor({
   }
 
   query += `
-    ORDER BY
-      planned_on DESC,
-      CASE type
-        WHEN 'zmiana_on' THEN 1
-        WHEN 'zmiana_off' THEN 2
-        WHEN 'alarm_brak_zalaczenia' THEN 3
-        WHEN 'alarm_brak_wylaczenia' THEN 4
-        WHEN 'pomiar' THEN 5
-        ELSE 99
-      END ASC,
-      timestamp_real DESC,
-      id DESC
+    GROUP BY planned_on, planned_off
+    ORDER BY planned_off DESC, planned_on DESC
     LIMIT 1
   `;
 
@@ -938,12 +999,10 @@ async function findReportCycleAnchor({
   const row = result.rows[0];
 
   return {
-    id: row.id,
     device_id: row.device_id || deviceId || currentCycle.device_id || deviceStatus.device_id || "szafa_01",
     planned_on: row.planned_on,
     planned_off: row.planned_off,
     cycle_date: deriveCycleDateFromPlannedOn(row.planned_on) || cycleDate || formatWarsawDateOnly(),
-    source_type: row.type,
     timestamp_real: row.timestamp_real
   };
 }
@@ -1287,6 +1346,9 @@ async function generateAndSendReport({
   };
 }
 
+// =====================================
+// POPRAWIONY SCHEDULER AUTO-RAPORTU
+// =====================================
 function startAutoReportScheduler() {
   const enabled = String(process.env.AUTO_REPORT_ENABLED || "true").toLowerCase() !== "false";
 
@@ -1301,14 +1363,13 @@ function startAutoReportScheduler() {
 
       const nowWarsaw = formatWarsawDateTime(new Date());
       const datePart = nowWarsaw.slice(0, 10);
-      const hourPart = nowWarsaw.slice(11, 13);
-      const minutePart = nowWarsaw.slice(14, 16);
-      const autoKey = `${datePart} ${hourPart}:${minutePart}`;
+      const hourPart = Number(nowWarsaw.slice(11, 13));
+      const minutePart = Number(nowWarsaw.slice(14, 16));
 
-      if (hourPart === "10" && minutePart === "00" && lastAutoReportKey !== autoKey) {
-        lastAutoReportKey = autoKey;
+      const isAfterTen = hourPart > 10 || (hourPart === 10 && minutePart >= 0);
 
-        console.log(`[AUTO REPORT] Start ${autoKey}`);
+      if (isAfterTen && lastAutoReportKey !== datePart) {
+        console.log(`[AUTO REPORT] Start dla dnia ${datePart}`);
 
         try {
           const result = await generateAndSendReport({
@@ -1317,6 +1378,8 @@ function startAutoReportScheduler() {
             resetCycleAfterSend: true,
             completedOnly: true
           });
+
+          lastAutoReportKey = datePart;
 
           console.log(
             `[AUTO REPORT] Wysłano raport ID=${result.saved.id} na ${result.email_to || "-"}`
