@@ -86,6 +86,20 @@ function formatLuxValue(value) {
   return `${Number(value).toFixed(2)} lx`;
 }
 
+function formatOffsetValue(value) {
+  const num = Number(value);
+
+  if (!Number.isFinite(num)) {
+    return "0 min";
+  }
+
+  if (num > 0) {
+    return `+${num} min`;
+  }
+
+  return `${num} min`;
+}
+
 function mapWindowStatus(rawStatus) {
   switch (rawStatus) {
     case "okno_pomiarowe":
@@ -295,6 +309,22 @@ function updateMapPanel() {
   setText("mapLastRead", currentDeviceStatus?.timestamp_real || latest?.timestamp_real);
 }
 
+function updateOffsetPanel() {
+  const offsetOnInput = document.getElementById("offsetOnMin");
+  const offsetOffInput = document.getElementById("offsetOffMin");
+
+  if (offsetOnInput) {
+    offsetOnInput.value = currentConfig?.offset_on_min ?? 0;
+  }
+
+  if (offsetOffInput) {
+    offsetOffInput.value = currentConfig?.offset_off_min ?? 0;
+  }
+
+  setText("currentOffsetOn", formatOffsetValue(currentConfig?.offset_on_min ?? 0));
+  setText("currentOffsetOff", formatOffsetValue(currentConfig?.offset_off_min ?? 0));
+}
+
 function initOrUpdateMap() {
   if (!currentConfig) return;
 
@@ -465,6 +495,8 @@ async function loadConfig() {
     if (configMode) configMode.value = currentConfig?.mode ?? "AUTO";
     if (manualOn) manualOn.value = currentConfig?.manual_on ?? "19:50";
     if (manualOff) manualOff.value = currentConfig?.manual_off ?? "05:00";
+
+    updateOffsetPanel();
 
     setText("locationStatus", `Aktualna lokalizacja: ${currentConfig?.lat}, ${currentConfig?.lon}`);
     setText("modeStatus", `Aktualny tryb: ${currentConfig?.mode}`);
@@ -695,6 +727,42 @@ if (saveManualPlanBtnEl) {
     } catch (error) {
       console.error(error);
       alert("Nie udało się zapisać planu ręcznego.");
+    }
+  });
+}
+
+const saveOffsetsBtnEl = document.getElementById("saveOffsetsBtn");
+if (saveOffsetsBtnEl) {
+  saveOffsetsBtnEl.addEventListener("click", async () => {
+    try {
+      const offsetOnInput = document.getElementById("offsetOnMin");
+      const offsetOffInput = document.getElementById("offsetOffMin");
+
+      const offset_on_min = Number.parseInt(offsetOnInput?.value ?? "0", 10);
+      const offset_off_min = Number.parseInt(offsetOffInput?.value ?? "0", 10);
+
+      if (!Number.isInteger(offset_on_min) || !Number.isInteger(offset_off_min)) {
+        alert("Korekta musi być liczbą całkowitą w minutach.");
+        return;
+      }
+
+      await postJson("/api/config", {
+        offset_on_min,
+        offset_off_min
+      });
+
+      await loadConfig();
+      await loadDashboard();
+
+      setText(
+        "offsetStatus",
+        `Zapisano korekty: ON ${formatOffsetValue(offset_on_min)}, OFF ${formatOffsetValue(offset_off_min)}`
+      );
+
+      alert("Zapisano korekty czasu.");
+    } catch (error) {
+      console.error(error);
+      alert("Nie udało się zapisać korekt czasu.");
     }
   });
 }
