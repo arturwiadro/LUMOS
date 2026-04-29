@@ -146,6 +146,14 @@ body {
   border-bottom: 1px solid rgba(255,255,255,0.05);
 }
 
+.offset-summary {
+  margin-top: 14px;
+}
+
+.offset-summary strong {
+  color: var(--yellow);
+}
+
 .action-btn {
   margin-top: 14px;
   padding: 12px 18px;
@@ -371,5 +379,9 @@ tr.alarm-row {
 
   .bar-row strong {
     text-align: left;
+  }
+
+  .two-cols {
+    grid-template-columns: 1fr;
   }
 }
