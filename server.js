@@ -435,7 +435,9 @@ let config = {
   lon: 19.9646,
   mode: "AUTO",
   manual_on: "19:50",
-  manual_off: "05:00"
+  manual_off: "05:00",
+  offset_on_min: 0,
+  offset_off_min: 0
 };
 
 let deviceStatus = {
@@ -1941,13 +1943,29 @@ app.get("/api/config", (req, res) => {
 });
 
 app.post("/api/config", (req, res) => {
-  const { lat, lon, mode, manual_on, manual_off } = req.body;
+  const {
+    lat,
+    lon,
+    mode,
+    manual_on,
+    manual_off,
+    offset_on_min,
+    offset_off_min
+  } = req.body;
 
   if (lat !== undefined) config.lat = Number(lat);
   if (lon !== undefined) config.lon = Number(lon);
   if (mode !== undefined) config.mode = mode;
   if (manual_on !== undefined) config.manual_on = manual_on;
   if (manual_off !== undefined) config.manual_off = manual_off;
+
+  if (offset_on_min !== undefined) {
+    config.offset_on_min = toIntWithinRange(offset_on_min, 0, -180, 180);
+  }
+
+  if (offset_off_min !== undefined) {
+    config.offset_off_min = toIntWithinRange(offset_off_min, 0, -180, 180);
+  }
 
   applyConfigToDeviceShadow();
 
