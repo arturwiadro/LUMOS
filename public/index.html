@@ -329,6 +329,35 @@
           </div>
 
           <div class="card">
+            <h3>Korekta czasu astronomicznego</h3>
+            <p class="hint">
+              Korekta działa w minutach. Wartość dodatnia opóźnia zdarzenie, a wartość ujemna przyspiesza.
+              Przykład: ON 20:05 i korekta +10 daje 20:15.
+            </p>
+
+            <div class="form-group">
+              <label for="offsetOnMin">Korekta załączenia ON [min]</label>
+              <input type="number" step="1" min="-180" max="180" id="offsetOnMin" />
+            </div>
+
+            <div class="form-group">
+              <label for="offsetOffMin">Korekta wyłączenia OFF [min]</label>
+              <input type="number" step="1" min="-180" max="180" id="offsetOffMin" />
+            </div>
+
+            <button id="saveOffsetsBtn" class="action-btn">Zapisz korekty</button>
+
+            <div class="stats-list offset-summary">
+              <div><span>Aktualna korekta ON</span><strong id="currentOffsetOn">0 min</strong></div>
+              <div><span>Aktualna korekta OFF</span><strong id="currentOffsetOff">0 min</strong></div>
+            </div>
+
+            <p class="hint" id="offsetStatus">Status korekt: —</p>
+          </div>
+        </div>
+
+        <div class="grid two-cols">
+          <div class="card">
             <h3>Tryb testowy</h3>
             <p class="hint">
               Te przyciski pozwalają zasymulować stan urządzenia i sprawdzić logikę dashboardu, alarmów oraz zapisu rekordów bez czekania na rzeczywiste zdarzenia.
