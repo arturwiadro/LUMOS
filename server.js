@@ -1938,6 +1938,25 @@ app.get("/api/check-status", async (req, res) => {
   }
 });
 
+// =====================================
+// CZAS SERWERA DLA SYNCHRONIZACJI RTC ESP32
+// =====================================
+app.get("/api/time", (req, res) => {
+  try {
+    const now = new Date();
+
+    res.json({
+      status: "ok",
+      timezone: "Europe/Warsaw",
+      timestamp_real: formatWarsawDateTime(now),
+      server_utc: now.toISOString()
+    });
+  } catch (error) {
+    console.error("GET /api/time error:", error);
+    res.status(500).json({ error: "Błąd pobierania czasu serwera." });
+  }
+});
+
 app.get("/api/config", (req, res) => {
   res.json(config);
 });
