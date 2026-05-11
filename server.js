@@ -2274,3 +2274,94 @@ initDatabase()
     console.error("Błąd inicjalizacji PostgreSQL:", error);
     process.exit(1);
   });
+// ========================================
+// WEATHER LOGGER
+// ========================================
+
+async function fetchAndSaveWeather() {
+    try {
+
+        const response = await axios.get(
+            "https://api.open-meteo.com/v1/forecast",
+            {
+                params: {
+                    latitude: 53.6967,
+                    longitude: 19.9649,
+                    current: [
+                        "temperature_2m",
+                        "cloud_cover",
+                        "cloud_cover_low",
+                        "cloud_cover_mid",
+                        "cloud_cover_high",
+                        "precipitation",
+                        "rain",
+                        "visibility",
+                        "is_day"
+                    ].join(","),
+                    timezone: "Europe/Warsaw"
+                }
+            }
+        );
+
+        const current = response.data.current;
+
+        await pool.query(
+            `
+            INSERT INTO weather_logs (
+                timestamp_weather,
+                latitude,
+                longitude,
+                temperature,
+                cloud_cover,
+                cloud_cover_low,
+                cloud_cover_mid,
+                cloud_cover_high,
+                precipitation,
+                rain,
+                visibility,
+                is_day
+            )
+            VALUES (
+                NOW(),
+                $1,
+                $2,
+                $3,
+                $4,
+                $5,
+                $6,
+                $7,
+                $8,
+                $9,
+                $10,
+                $11
+            )
+            `,
+            [
+                53.6967,
+                19.9649,
+                current.temperature_2m,
+                current.cloud_cover,
+                current.cloud_cover_low,
+                current.cloud_cover_mid,
+                current.cloud_cover_high,
+                current.precipitation,
+                current.rain,
+                current.visibility,
+                current.is_day
+            ]
+        );
+
+        console.log("✅ Weather saved");
+
+    } catch (error) {
+
+        console.error("❌ Weather error:", error.message);
+
+    }
+}
+
+// start
+fetchAndSaveWeather();
+
+// every 15 min
+setInterval(fetchAndSaveWeather, 15 * 60 * 1000);
