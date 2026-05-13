@@ -2465,7 +2465,7 @@ app.get("/api/ai/analyze-on", async (req, res) => {
       VALUES (
         $1,
         CASE
-          WHEN $1 IS NOT NULL THEN ($1::timestamp + ($2 || ' minutes')::interval)
+          WHEN $1 IS NOT NULL THEN ($1::timestamp + make_interval(mins => $2::int))
           ELSE NULL
         END,
         $2,$3,$4,$5,$6,$7,$8,$9
