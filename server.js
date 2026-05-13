@@ -2277,6 +2277,40 @@ initDatabase()
     console.error("Błąd inicjalizacji PostgreSQL:", error);
     process.exit(1);
   });
+
+// ============================================
+// WEATHER API
+// ============================================
+
+app.get("/api/weather/latest", async (req, res) => {
+  try {
+
+    const result = await pool.query(`
+      SELECT *
+      FROM weather_logs
+      ORDER BY id DESC
+      LIMIT 1
+    `);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        error: "Brak danych pogodowych"
+      });
+    }
+
+    res.json(result.rows[0]);
+
+  } catch (error) {
+
+    console.error("Weather latest error:", error);
+
+    res.status(500).json({
+      error: "Błąd pobierania pogody"
+    });
+
+  }
+});
+
 // ========================================
 // WEATHER LOGGER
 // ========================================
