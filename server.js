@@ -2506,3 +2506,61 @@ app.get("/api/ai/analyze-on", async (req, res) => {
     });
   }
 });
+// ============================================
+// AI AUTO ANALYZE
+// ============================================
+
+async function autoAnalyzeAI() {
+  try {
+
+    const latestLight = await pool.query(`
+      SELECT *
+      FROM lighting_logs
+      ORDER BY id DESC
+      LIMIT 1
+    `);
+
+    if (!latestLight.rows.length) {
+      return;
+    }
+
+    const light = latestLight.rows[0];
+
+    if (!light.planned_on) {
+      return;
+    }
+
+    const now = new Date();
+    const plannedOn = new Date(light.planned_on);
+
+    const diffMinutes =
+      (plannedOn.getTime() - now.getTime()) / 1000 / 60;
+
+    // analiza tylko 90 min przed ON
+    if (
+      diffMinutes <= 90 &&
+      diffMinutes >= 0 &&
+      Number(light.state) === 0
+    ) {
+
+      console.log("🤖 AI AUTO ANALYZE");
+
+      const result = await analyzeOnExpertV1();
+
+      console.log("✅ AI decision saved:", {
+        offset: result.offset_on_min,
+        lux: result.lux,
+        cloud: result.cloud_cover
+      });
+    }
+
+  } catch (error) {
+    console.error("❌ AI AUTO error:", error.message);
+  }
+}
+
+// start
+autoAnalyzeAI();
+
+// every 15 min
+setInterval(autoAnalyzeAI, 15 * 60 * 1000);
