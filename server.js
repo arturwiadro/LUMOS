@@ -2407,93 +2407,97 @@ setInterval(fetchAndSaveWeather, 15 * 60 * 1000);
 // AI EXPERT V1 - ANALIZA ON
 // ============================================
 
+async function analyzeOnExpertV1() {
+  const latestLight = await pool.query(`
+    SELECT *
+    FROM lighting_logs
+    ORDER BY id DESC
+    LIMIT 1
+  `);
+
+  const latestWeather = await pool.query(`
+    SELECT *
+    FROM weather_logs
+    ORDER BY id DESC
+    LIMIT 1
+  `);
+
+  if (!latestLight.rows.length || !latestWeather.rows.length) {
+    throw new Error("Brak danych do analizy AI");
+  }
+
+  const light = latestLight.rows[0];
+  const weather = latestWeather.rows[0];
+
+  let offsetOnMin = 0;
+  let reason = "Warunki normalne - bez korekty";
+
+  if (weather.cloud_cover >= 90 && light.lux <= 5) {
+    offsetOnMin = -25;
+    reason = "Duże zachmurzenie i lux około/przy poniżej 5 lx - zalecane wcześniejsze załączenie";
+  } else if (weather.cloud_cover >= 80 && light.lux <= 7) {
+    offsetOnMin = -15;
+    reason = "Wysokie zachmurzenie i niski lux - zalecane lekkie wcześniejsze załączenie";
+  } else if (weather.visibility < 5000) {
+    offsetOnMin = -15;
+    reason = "Pogorszona widoczność - zalecane wcześniejsze załączenie";
+  }
+
+  const plannedOn = light.planned_on || null;
+
+  const insertResult = await pool.query(
+    `
+    INSERT INTO ai_decisions (
+      planned_on,
+      predicted_on,
+      offset_on_min,
+      lux,
+      cloud_cover,
+      visibility,
+      rain,
+      temperature,
+      reason,
+      ai_version
+    )
+    VALUES (
+      $1,
+      ($1::timestamp + make_interval(mins => $2::int)),
+      $2,$3,$4,$5,$6,$7,$8,$9
+    )
+    RETURNING *
+    `,
+    [
+      plannedOn,
+      offsetOnMin,
+      light.lux,
+      weather.cloud_cover,
+      weather.visibility,
+      weather.rain,
+      weather.temperature,
+      reason,
+      "expert_v1"
+    ]
+  );
+
+  return {
+    status: "ok",
+    ai_version: "expert_v1",
+    decision: insertResult.rows[0],
+    planned_on: plannedOn,
+    offset_on_min: offsetOnMin,
+    lux: light.lux,
+    cloud_cover: weather.cloud_cover,
+    visibility: weather.visibility,
+    rain: weather.rain,
+    temperature: weather.temperature,
+    reason
+  };
+}
+
 app.get("/api/ai/analyze-on", async (req, res) => {
   try {
-    const latestLight = await pool.query(`
-      SELECT *
-      FROM lighting_logs
-      ORDER BY id DESC
-      LIMIT 1
-    `);
-
-    const latestWeather = await pool.query(`
-      SELECT *
-      FROM weather_logs
-      ORDER BY id DESC
-      LIMIT 1
-    `);
-
-    if (!latestLight.rows.length || !latestWeather.rows.length) {
-      return res.status(404).json({
-        error: "Brak danych do analizy AI"
-      });
-    }
-
-    const light = latestLight.rows[0];
-    const weather = latestWeather.rows[0];
-
-    let offsetOnMin = 0;
-    let reason = "Warunki normalne - bez korekty";
-
-    if (weather.cloud_cover >= 90 && light.lux <= 5) {
-      offsetOnMin = -25;
-      reason = "Duże zachmurzenie i lux około/przy poniżej 5 lx - zalecane wcześniejsze załączenie";
-    } else if (weather.cloud_cover >= 80 && light.lux <= 7) {
-      offsetOnMin = -15;
-      reason = "Wysokie zachmurzenie i niski lux - zalecane lekkie wcześniejsze załączenie";
-    } else if (weather.visibility < 5000) {
-      offsetOnMin = -15;
-      reason = "Pogorszona widoczność - zalecane wcześniejsze załączenie";
-    }
-
-    const plannedOn = light.planned_on || null;
-
-    await pool.query(
-      `
-      INSERT INTO ai_decisions (
-        planned_on,
-        predicted_on,
-        offset_on_min,
-        lux,
-        cloud_cover,
-        visibility,
-        rain,
-        temperature,
-        reason,
-        ai_version
-      )
-      VALUES (
-  $1,
-  ($1::timestamp + make_interval(mins => $2::int)),
-  $2,$3,$4,$5,$6,$7,$8,$9
-)
-      `,
-      [
-        plannedOn,
-        offsetOnMin,
-        light.lux,
-        weather.cloud_cover,
-        weather.visibility,
-        weather.rain,
-        weather.temperature,
-        reason,
-        "expert_v1"
-      ]
-    );
-
-    res.json({
-      status: "ok",
-      ai_version: "expert_v1",
-      planned_on: plannedOn,
-      offset_on_min: offsetOnMin,
-      lux: light.lux,
-      cloud_cover: weather.cloud_cover,
-      visibility: weather.visibility,
-      rain: weather.rain,
-      temperature: weather.temperature,
-      reason
-    });
-
+    const result = await analyzeOnExpertV1();
+    res.json(result);
   } catch (error) {
     console.error("AI analyze-on error:", error);
     res.status(500).json({
